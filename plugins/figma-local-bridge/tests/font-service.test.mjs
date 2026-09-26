@@ -42,6 +42,12 @@ for (const operation of ['patch', 'move', 'reconstruction']) test(`${operation}:
       assert.equal(error.code, 'FONT_SERVICE_TIMEOUT');
       assert.equal(error.operationStatus, 'not_applied');
       assert.equal(error.retryPolicy, 'after_state_change');
+      assert.match(error.nextStep, /get_status/);
+      assert.match(error.nextStep, /отдельное открытое окно/);
+      assert.match(error.nextStep, /той же реальной спецификацией/);
+      assert.match(error.nextStep, /не гарантия для всех версий/);
+      assert.match(error.nextStep, /не переключайте вкладку/);
+      assert.doesNotMatch(error.nextStep, /активируйте её/);
       assert.match(error.message, /Factor IO.*Bold/);
       assert.match(error.nextStep, /не повторяйте неизменённый запрос/i);
       return true;

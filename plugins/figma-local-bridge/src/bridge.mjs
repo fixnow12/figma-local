@@ -336,7 +336,7 @@ export class LocalFigmaWebSocketServer {
         error.operationStatus = "unknown";
         error.code = "PLUGIN_RESPONSE_TIMEOUT";
         error.fileKey = fileKey;
-        error.nextStep = `Откройте вкладку целевого файла ${client.fileInfo.fileName} в Figma Desktop и проверьте журнал Bridge. Соединение WebSocket и isActive не доказывают готовность Plugin API. Не повторяйте запись автоматически; после восстановления сначала прочитайте затронутые узлы.`;
+        error.nextStep = `Проверьте get_status для целевого fileKey и журнал Bridge файла ${client.fileInfo.fileName}. При проверке фоновой работы сохраните активную вкладку и зафиксируйте отсутствие ответа Plugin API; переключение фокуса не доказывает исправление. Соединение WebSocket и isActive не доказывают готовность Plugin API. Не повторяйте запись автоматически; после восстановления сначала прочитайте затронутые узлы.`;
         reject(error);
       }, timeoutMs);
       this.pendingRequests.set(id, { resolve, reject, timeoutId, fileKey, method, ws: client.ws });

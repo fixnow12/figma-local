@@ -87,7 +87,9 @@ test('полный установленный UI: auto auth → FILE_INFO → к
   await assert.rejects(client.execute('return 3'), error => {
     assert.equal(error.code, 'PLUGIN_UNRESPONSIVE');
     assert.equal(error.operationStatus, 'not_applied');
-    assert.match(error.nextStep, /целевую вкладку/);
+    assert.match(error.nextStep, /get_status/);
+    assert.match(error.nextStep, /Сохраните активную вкладку/);
+    assert.doesNotMatch(error.nextStep, /Откройте целевую вкладку/);
     return true;
   });
   assert.equal(commands.filter(type => type === 'EXECUTE_CODE').length, 1, 'неответивший probe не должен отправлять код в отложенное выполнение');

@@ -712,7 +712,7 @@
         var unavailable = new Error('Figma Plugin API не ответил на проверку готовности. Команда не отправлена.');
         unavailable.operationStatus = 'not_applied';
         unavailable.code = 'PLUGIN_UNRESPONSIVE';
-        unavailable.nextStep = 'Откройте целевую вкладку Figma Desktop и оставьте Bridge открытым. Если вкладка уже активна, проверьте журнал и обновление плагина. Не повторяйте запросы с sleep: WebSocket может оставаться подключённым при отсутствии ответа Plugin API.';
+        unavailable.nextStep = 'Проверьте журнал Bridge и адресный get_status(fileKey). Сохраните активную вкладку при проверке фоновой работы; отсутствие ответа Plugin API фиксируйте отдельно от подключения WebSocket. Переключение фокуса не доказывает исправление. Не повторяйте запросы с sleep: WebSocket может оставаться подключённым при отсутствии ответа Plugin API.';
         throw unavailable;
       }
       return status;

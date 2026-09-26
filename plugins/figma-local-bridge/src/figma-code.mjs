@@ -1063,7 +1063,7 @@ if (input.dryRun) {
     sourceName: component.name,
     libraryKey: input.libraryKey || component.key,
     variantProperties: component.variantProperties,
-    componentPropertyDefinitions: component.componentPropertyDefinitions,
+    componentPropertyDefinitions: (component.parent?.type === "COMPONENT_SET" ? component.parent : component).componentPropertyDefinitions,
   };
 }
 
