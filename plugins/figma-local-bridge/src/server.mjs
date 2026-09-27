@@ -25,6 +25,7 @@ import { captureLibraryTemplateInputSchema, captureLibraryTemplateSchema, assemb
 import { BrokerClient } from "./broker-client.mjs";
 import { runtimeDiagnostics } from "./runtime-info.mjs";
 import { exportAssetsInputSchema, exportAssetsSchema, buildExportAssetsCode } from "./export-assets.mjs";
+import { catalogInventoryInputSchema, catalogInventorySchema, catalogPageInputSchema, catalogPageSchema, catalogExampleInputSchema, catalogExampleSchema, buildCatalogInventoryCode, buildCatalogPageCode, buildCatalogExampleCode } from './catalog-read.mjs';
 import { recreateScreenInputSchema, recreateScreen } from "./reconstruction.mjs";
 import {
   inspectSelectionInputSchema,
@@ -254,6 +255,35 @@ function registerGeneratedTool(name, config, schema, buildCode, { mutating = tru
     }
   });
 }
+
+registerGeneratedTool('read_catalog_inventory', {
+  title:'Прочитать страницы источника каталога',
+  description:'Читает все страницы точно указанного файла; nodeId дополнительно устанавливает область источника. Не переключает страницу и выделение. Контракт результата schemaVersion=1, kind=inventory.',
+  inputSchema:catalogInventoryInputSchema,
+  annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true},
+},catalogInventorySchema,buildCatalogInventoryCode,{mutating:false});
+
+registerGeneratedTool('scan_catalog_page', {
+  title:'Сканировать роли и ресурсы страницы каталога',
+  description:'Точное чтение pageId и необязательной подобласти nodeId без переключения страницы. roles и manifest возвращают срезы до 200 записей с fingerprint и nextCursor; resources принимает 1–8 ID из полного manifest и проверяет manifestFingerprint перед чтением опубликованных ключей. Исключает ветки DEPRECATED. Контракт schemaVersion=1.',
+  inputSchema:catalogPageInputSchema,
+  annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true},
+},catalogPageSchema,buildCatalogPageCode,{mutating:false});
+
+server.registerTool('read_catalog_example', {
+  title:'Прочитать пример каталога',
+  description:'Полное дерево известного узла на pageId с пагинацией до 200 узлов: childIds, parentId, тексты, оформление, Variable bindings и происхождение экземпляров. includePng прикладывает PNG отдельным image block. Не переключает страницу и выделение. Контракт schemaVersion=1.',
+  inputSchema:catalogExampleInputSchema,
+  annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true},
+},async input=>{
+  try {
+    const parsed=catalogExampleSchema.parse(input);
+    return await runToolOperation(bridge,parsed,buildCatalogExampleCode(parsed),{
+      operationName:'read_catalog_example',mutating:false,
+      screenshotRequested:Boolean(parsed.includePng),screenshotNode:payload=>payload.result?.screenshotNodeId,
+    });
+  } catch(error) {return fail(error);}
+});
 
 registerGeneratedTool('capture_library_template', {
   title: 'Запомнить библиотечный шаблон',

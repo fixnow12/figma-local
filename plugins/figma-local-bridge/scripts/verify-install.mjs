@@ -35,7 +35,7 @@ if (opencode) {
 // Codex otherwise inherits the task directory, not the installed plugin directory.
 if (!opencode) assert.equal(config.cwd, '.', 'MCP должен запускаться из корня установленного плагина');
 const serverCwd = resolve(dirname(configPath), config.cwd);
-const expectedTools = ['activate_page', 'assemble_library_template', 'bind_variables', 'capture_library_template', 'clone_nodes', 'export_assets', 'find_assets', 'get_file_metadata', 'get_operation_status', 'get_page_settings', 'get_status', 'import_variables', 'inspect_selection', 'move_nodes', 'patch_nodes', 'recreate_screen', 'render_screen', 'resolve_resource_keys', 'resolve_variables', 'set_file_metadata', 'set_node_variable_modes', 'set_page_settings', 'set_reactions', 'set_text_links', 'use_component'];
+const expectedTools = ['activate_page', 'assemble_library_template', 'bind_variables', 'capture_library_template', 'clone_nodes', 'export_assets', 'find_assets', 'get_file_metadata', 'get_operation_status', 'get_page_settings', 'get_status', 'import_variables', 'inspect_selection', 'move_nodes', 'patch_nodes', 'read_catalog_example', 'read_catalog_inventory', 'recreate_screen', 'render_screen', 'resolve_resource_keys', 'resolve_variables', 'scan_catalog_page', 'set_file_metadata', 'set_node_variable_modes', 'set_page_settings', 'set_reactions', 'set_text_links', 'use_component'];
 
 const transport = new StdioClientTransport({
   // Do not substitute process.execPath: that hides a broken command/PATH.

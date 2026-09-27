@@ -35,7 +35,7 @@ test("MCP публикует типизированные схемы без unkn
     for (const tool of tools) checkArrays(tool.inputSchema, tool.name);
     assert.deepEqual(
       tools.map((tool) => tool.name).sort(),
-      ["activate_page", "assemble_library_template", "bind_variables", "capture_library_template", "clone_nodes", "export_assets", "find_assets", "get_file_metadata", "get_operation_status", "get_page_settings", "get_status", "import_variables", "inspect_selection", "move_nodes", "patch_nodes", "recreate_screen", "render_screen", "resolve_resource_keys", "resolve_variables", "set_file_metadata", "set_node_variable_modes", "set_page_settings", "set_reactions", "set_text_links", "use_component"],
+      ["activate_page", "assemble_library_template", "bind_variables", "capture_library_template", "clone_nodes", "export_assets", "find_assets", "get_file_metadata", "get_operation_status", "get_page_settings", "get_status", "import_variables", "inspect_selection", "move_nodes", "patch_nodes", "read_catalog_example", "read_catalog_inventory", "recreate_screen", "render_screen", "resolve_resource_keys", "resolve_variables", "scan_catalog_page", "set_file_metadata", "set_node_variable_modes", "set_page_settings", "set_reactions", "set_text_links", "use_component"],
     );
 
     const resolver=tools.find(tool=>tool.name==='resolve_resource_keys');

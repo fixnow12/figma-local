@@ -63,7 +63,7 @@ test('проверка отклоняет manifest без cwd до запуск�
 
 test('проверка исходников не выдаёт проверку MCP за живое соединение с Figma', async () => {
   const report = await verifyInstallation();
-  assert.equal(report.tools.length, 25);
+  assert.equal(report.tools.length, 28);
   assert.equal(report.liveChecked, false);
   assert.equal(report.files, undefined);
 });
@@ -71,7 +71,7 @@ test('проверка исходников не выдаёт проверку M
 test('проверка OpenCode запускает MCP из opencode.json и проверяет полное чтение', async () => {
   const report = await verifyInstallation({ opencode: true });
   assert.match(report.configPath, /opencode.json$/);
-  assert.equal(report.tools.length, 25);
+  assert.equal(report.tools.length, 28);
   assert.ok(report.inspectFields.includes('nodeIds'));
   assert.ok(report.inspectFields.includes('detail'));
   assert.equal(report.liveChecked, false);
