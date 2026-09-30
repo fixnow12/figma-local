@@ -293,3 +293,55 @@ test('branched large roles preserve all tagged roles and stable fingerprints; em
   assert.deepEqual(result.componentIds,[]);assert.deepEqual(result.exampleCandidates,[]);
   assert.equal(result.total,0);assert.equal(result.complete,true);assert.equal(result.nextCursor,null);
 });
+
+for (const [label, build] of [['page', buildCatalogPageCode], ['example', buildCatalogExampleCode]]) {
+  const inputFor = ({page, set}) => ({fileKey:'target', pageId:page.id, nodeId:set.id, ...(label==='page'?{mode:'manifest'}:{})});
+  test(`${label} rejects invalid scope before loading or traversing the tree`, async()=>{
+    for (const kind of ['file', 'non-page', 'detached-page', 'foreign-root']) {
+      const f=fixture(), {mock,page,set,group}=f;
+      const input=inputFor(f); let loads=0;
+      page.loadAsync=async()=>{loads++;};
+      if(kind==='file')mock.figma.fileKey='other';
+      if(kind==='non-page')input.pageId=group.id;
+      if(kind==='detached-page')mock.figma.root.children=mock.figma.root.children.filter(node=>node!==page);
+      if(kind==='foreign-root')input.nodeId=mock.make('FRAME',{},mock.page).id;
+      mock.writes.length=0;
+      await assert.rejects(run(mock,build,input),error=>{
+        const message=kind==='file'?'Неверный целевой файл':kind==='foreign-root'?'nodeId находится вне pageId':'pageId должен указывать на страницу целевого файла';
+        assert.equal(error.message,message);assert.equal(error.operationStatus,'not_applied');
+        assert.equal(error.catalogDiagnostics.phase,kind==='file'?'start':kind==='foreign-root'?'rootLookup':'pageLookup');
+        return true;
+      });
+      assert.equal(loads,kind==='foreign-root'?1:0);assert.equal(mock.writes.length,0);assert.equal(mock.figma.currentPage,mock.page);
+    }
+  });
+  test(`${label} preserves native timeout and cancellation at page loading`,async()=>{
+    for (const kind of ['timeout','cancelled']) {
+      const f=fixture(), {mock,page}=f,control={cancelled:false};
+      const failure=Object.assign(new Error('native page timeout'),{code:'FIGMA_READ_TIMEOUT'});
+      page.loadAsync=async()=>{if(kind==='timeout')throw failure;control.cancelled=true;};mock.writes.length=0;
+      const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+      await assert.rejects(new AsyncFunction('figma','executionControl',build(inputFor(f)))(mock.figma,control),error=>{
+        assert.equal(error.code,kind==='timeout'?'FIGMA_READ_TIMEOUT':'OPERATION_CANCELLED');
+        if(kind==='timeout')assert.equal(error,failure);
+        assert.equal(error.operationStatus,'not_applied');assert.equal(error.catalogDiagnostics.phase,'pageLoad');return true;
+      });
+      assert.equal(mock.writes.length,0);assert.equal(mock.figma.currentPage,mock.page);
+    }
+  });
+  test(`${label} detects a file change during page loading before returning evidence`,async()=>{
+    const f=fixture(),{mock,page}=f;page.loadAsync=async()=>{mock.figma.fileKey='other';};mock.writes.length=0;
+    await assert.rejects(run(mock,build,inputFor(f)),error=>{
+      assert.equal(error.message,'Целевой файл изменился во время чтения');assert.equal(error.operationStatus,'not_applied');return true;
+    });
+    assert.equal(mock.writes.length,0);assert.equal(mock.figma.currentPage,mock.page);
+  });
+}
+
+test('example builder never defaults a missing required node to the whole page',async()=>{
+  const {mock,page}=fixture();
+  await assert.rejects(run(mock,buildCatalogExampleCode,{fileKey:'target',pageId:page.id}),error=>{
+    assert.match(error.message,/Узел не найден/);assert.equal(error.operationStatus,'not_applied');assert.equal(error.catalogDiagnostics.phase,'rootLookup');return true;
+  });
+  assert.equal(mock.writes.length,0);
+});

@@ -1,3 +1,4 @@
+import { createCatalogReadAccess } from './catalog-read-access.mjs';
 import { applyExactParagraphRanges } from "./text-paragraphs.mjs";
 import { createMutationSafety } from "./mutation-safety.mjs";
 import { createFontService } from "./font-service.mjs";
@@ -106,6 +107,7 @@ export function compileOperation(operation, input, { mutationSafety = false, rea
   const access = (${createSceneAccess.toString()})(figma, check, loadFont, readService);
   ${catalogDiagnostics ? `const catalogDiagnostics = (${createCatalogDiagnostics.toString()})();
   access.diagnostics = catalogDiagnostics;
+  access.catalog = (${createCatalogReadAccess.toString()})(figma, access);
   if (typeof executionControl !== "undefined") executionControl.catalogDiagnosticsSnapshot = () => catalogDiagnostics.snapshot();` : ''}
   try {
     const result = await (${operation.toString()})(figma, ${json}, access, safety);

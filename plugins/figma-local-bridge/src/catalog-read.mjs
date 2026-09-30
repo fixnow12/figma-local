@@ -29,7 +29,7 @@ export const catalogExampleSchema = z.object(catalogExampleInputSchema).strict()
 // self-contained: MCP accepts typed data only and never exposes a JS argument.
 async function inventory(figma, input, access) {
   const diagnostics=access.diagnostics;
-  if (typeof figma.fileKey === 'string' && figma.fileKey !== input.fileKey) throw new Error('Неверный целевой файл');
+  access.catalog.assertFile(input.fileKey);
   diagnostics.mark('pageLookup');
   const pages = figma.root.children.filter(node => node.type === 'PAGE').map(node => ({id:node.id,name:node.name}));
   diagnostics.count({pages:pages.length});
@@ -43,26 +43,13 @@ async function inventory(figma, input, access) {
     await access.read(page.loadAsync(), 'страница ' + page.id);
     sourceScope = {nodeId:node.id,nodeType:node.type,nodeName:node.name,pageId:page.id,pageName:page.name};
   }
-  if (typeof figma.fileKey === 'string' && figma.fileKey !== input.fileKey) throw new Error('Целевой файл изменился во время чтения');
+  access.catalog.assertFile(input.fileKey, true);
   return {schemaVersion:1,kind:'inventory',fileKey:input.fileKey,pages,complete:true,...(sourceScope?{sourceScope}:{})};
 }
 
 async function pageScan(figma, input, access) {
   const diagnostics=access.diagnostics;
-  if (typeof figma.fileKey === 'string' && figma.fileKey !== input.fileKey) throw new Error('Неверный целевой файл');
-  diagnostics.mark('pageLookup');
-  const page = await access.node(input.pageId);
-  if (page.type !== 'PAGE' || !figma.root.children.includes(page)) throw new Error('pageId должен указывать на страницу целевого файла');
-  diagnostics.mark('pageLoad');
-  await access.read(page.loadAsync(), 'страница ' + page.id);
-  diagnostics.mark('rootLookup');
-  const root = input.nodeId ? await access.node(input.nodeId) : page;
-  for (let ancestor = root; ancestor && ancestor !== page; ancestor = ancestor.parent) {
-    if (!ancestor.parent) throw new Error('nodeId находится вне pageId');
-  }
-  let ancestor = root;
-  while (ancestor && ancestor !== page) ancestor = ancestor.parent;
-  if (ancestor !== page) throw new Error('nodeId находится вне pageId');
+  const {page, root} = await access.catalog.scope(input);
   const deprecated = node => /deprecated/i.test(String(node.name ?? '') + ' ' + String(node.description ?? ''));
   const active = node => {
     for (let current=node; current && current !== page; current=current.parent) if (deprecated(current)) return false;
@@ -105,7 +92,7 @@ async function pageScan(figma, input, access) {
     if (offset > ids.length) throw new Error('Курсор вне manifest');
     const limit=input.limit ?? 100, next=offset+limit;
     const unreadNodeCount=Math.max(0,ids.length-next);
-    if (typeof figma.fileKey === 'string' && figma.fileKey !== input.fileKey) throw new Error('Целевой файл изменился во время чтения');
+    access.catalog.assertFile(input.fileKey, true);
     return {schemaVersion:1,kind:'manifest',fileKey:input.fileKey,pageId:page.id,rootNodeId:root.id,
       componentIds:ids.slice(offset,next),manifestFingerprint,complete:next>=ids.length,
       cursor:input.cursor??null,nextCursor:next<ids.length?`${next}:${fingerprint}`:null,
@@ -162,7 +149,7 @@ async function pageScan(figma, input, access) {
     if(offset>tagged.length)throw new Error('Курсор вне списка ролей');
     const limit=input.limit??100,next=offset+limit,items=tagged.slice(offset,next);
     const unreadNodeCount=Math.max(0,tagged.length-next);
-    if (typeof figma.fileKey === 'string' && figma.fileKey !== input.fileKey) throw new Error('Целевой файл изменился во время чтения');
+    access.catalog.assertFile(input.fileKey, true);
     return {schemaVersion:1,kind:'source-roles',fileKey:input.fileKey,pageId:page.id,rootNodeId:root.id,
       componentIds:items.filter(item=>item.kind==='component').map(item=>item.id),
       exampleCandidates:items.filter(item=>item.kind==='example').map(item=>item.value),
@@ -241,7 +228,7 @@ async function pageScan(figma, input, access) {
     if(!['CURRENT','CHANGED','UNPUBLISHED'].includes(publishStatus)){gaps.push({kind:'style',id,reason:'publish-status-unavailable'});continue;}
     styles.push({id,name:style.name,key:style.key,styleType:style.type,publishStatus});
   }
-  if (typeof figma.fileKey === 'string' && figma.fileKey !== input.fileKey) throw new Error('Целевой файл изменился во время чтения');
+  access.catalog.assertFile(input.fileKey, true);
   diagnostics.count({components:components.length,variables:variables.length,styles:styles.length,gaps:gaps.length});
   return {schemaVersion:1,kind:'resource-batch',fileKey:input.fileKey,pageId:page.id,rootNodeId:root.id,
     manifestFingerprint,componentIds:selected,complete:true,scanComplete:true,
@@ -251,17 +238,7 @@ async function pageScan(figma, input, access) {
 
 async function example(figma,input,access) {
   const diagnostics=access.diagnostics;
-  if (typeof figma.fileKey === 'string' && figma.fileKey !== input.fileKey) throw new Error('Неверный целевой файл');
-  diagnostics.mark('pageLookup');
-  const page=await access.node(input.pageId);
-  if(page.type!=='PAGE'||!figma.root.children.includes(page))throw new Error('pageId должен указывать на страницу целевого файла');
-  diagnostics.mark('pageLoad');
-  await access.read(page.loadAsync(),'страница '+page.id);
-  diagnostics.mark('rootLookup');
-  const root=await access.node(input.nodeId);
-  let ancestor=root;
-  while(ancestor&&ancestor!==page)ancestor=ancestor.parent;
-  if(ancestor!==page)throw new Error('nodeId находится вне pageId');
+  const {page, root} = await access.catalog.scope(input, true);
   const all=[],stack=[root];
   diagnostics.mark('fullTree');
   while(stack.length){access.check();
@@ -306,7 +283,7 @@ async function example(figma,input,access) {
     nodes.push(value);
   }
   if(JSON.stringify(nodes).length*3>4000000)throw new Error('Фрагмент примера слишком велик (>4 МБ); уменьшите limit или выберите меньшую ветку');
-  if (typeof figma.fileKey === 'string' && figma.fileKey !== input.fileKey) throw new Error('Целевой файл изменился во время чтения');
+  access.catalog.assertFile(input.fileKey, true);
   const unreadNodeCount=Math.max(0,all.length-next);
   return {schemaVersion:1,kind:'example',fileKey:input.fileKey,pageId:page.id,rootNodeId:root.id,
     nodes,gaps,complete:next>=all.length,cursor:input.cursor??null,nextCursor:next<all.length?`${next}:${fingerprint}`:null,
