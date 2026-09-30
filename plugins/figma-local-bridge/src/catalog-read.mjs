@@ -28,14 +28,18 @@ export const catalogExampleSchema = z.object(catalogExampleInputSchema).strict()
 // These functions are serialized into the Desktop plugin. Keep each operation
 // self-contained: MCP accepts typed data only and never exposes a JS argument.
 async function inventory(figma, input, access) {
+  const diagnostics=access.diagnostics;
   if (typeof figma.fileKey === 'string' && figma.fileKey !== input.fileKey) throw new Error('Неверный целевой файл');
+  diagnostics.mark('pageLookup');
   const pages = figma.root.children.filter(node => node.type === 'PAGE').map(node => ({id:node.id,name:node.name}));
+  diagnostics.count({pages:pages.length});
   let sourceScope;
   if (input.nodeId) {
     const node = await access.node(input.nodeId);
     let page = node;
     while (page && page.type !== 'PAGE') page = page.parent;
     if (!page || !pages.some(item => item.id === page.id)) throw new Error('Узел не принадлежит целевому файлу');
+    diagnostics.mark('pageLoad');
     await access.read(page.loadAsync(), 'страница ' + page.id);
     sourceScope = {nodeId:node.id,nodeType:node.type,nodeName:node.name,pageId:page.id,pageName:page.name};
   }
@@ -44,10 +48,14 @@ async function inventory(figma, input, access) {
 }
 
 async function pageScan(figma, input, access) {
+  const diagnostics=access.diagnostics;
   if (typeof figma.fileKey === 'string' && figma.fileKey !== input.fileKey) throw new Error('Неверный целевой файл');
+  diagnostics.mark('pageLookup');
   const page = await access.node(input.pageId);
   if (page.type !== 'PAGE' || !figma.root.children.includes(page)) throw new Error('pageId должен указывать на страницу целевого файла');
+  diagnostics.mark('pageLoad');
   await access.read(page.loadAsync(), 'страница ' + page.id);
+  diagnostics.mark('rootLookup');
   const root = input.nodeId ? await access.node(input.nodeId) : page;
   for (let ancestor = root; ancestor && ancestor !== page; ancestor = ancestor.parent) {
     if (!ancestor.parent) throw new Error('nodeId находится вне pageId');
@@ -61,13 +69,25 @@ async function pageScan(figma, input, access) {
     return true;
   };
   const descendants = [], stack=[root];
+  let treeYieldCount=0, treeYieldWaitMs=0;
+  diagnostics.mark('fullTree');
   while (stack.length) {
     access.check();
-    if (descendants.length && descendants.length % 2048 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+    if (descendants.length && descendants.length % 2048 === 0) {
+      const startedAt=Date.now();
+      diagnostics.count({treeNodesVisited:descendants.length,treeYieldCount:++treeYieldCount,treeYieldPending:1,treeYieldStartedAtMs:startedAt});
+      await new Promise(resolve => setTimeout(resolve, 0));
+      treeYieldWaitMs+=Math.max(0,Date.now()-startedAt);
+      diagnostics.count({treeYieldWaitMs,treeYieldPending:0});
+      access.check();
+    }
     const node=stack.pop();descendants.push(node);
-    if ('children' in node) for (let index=node.children.length-1;index>=0;index--) stack.push(node.children[index]);
+    if ('children' in node) {const children=node.children;for (let index=children.length-1;index>=0;index--) stack.push(children[index]);}
   }
+  diagnostics.count({treeNodes:descendants.length,treeNodesVisited:descendants.length});
+  diagnostics.mark('manifest');
   const ids = descendants.filter(node => ['COMPONENT','COMPONENT_SET'].includes(node.type) && active(node)).map(node => node.id).sort();
+  diagnostics.count({manifestComponents:ids.length});
   const hash = value => {
     let result=2166136261;
     for (const char of JSON.stringify(value)) result=Math.imul(result^char.charCodeAt(0),16777619)>>>0;
@@ -93,6 +113,7 @@ async function pageScan(figma, input, access) {
       unreadNodeIds:ids.slice(next,next+limit),unreadNodeCount,unreadNodeIdsComplete:unreadNodeCount<=limit};
   }
   if (input.mode === 'roles') {
+    diagnostics.mark('roles');
     const signal = node => {
       const pending=[node];
       while(pending.length){const current=pending.pop();
@@ -153,21 +174,32 @@ async function pageScan(figma, input, access) {
   }
   // Each resource request proves its exact selected IDs still belong to the
   // current full manifest before returning any published-key evidence.
+  diagnostics.mark('selectedIdsValidation',{selectedComponents:input.componentIds.length});
   if (input.manifestFingerprint!==manifestFingerprint) throw new Error('Manifest изменился; обновите список компонентов');
   const selected=input.componentIds;
   if (selected.some(id=>!ids.includes(id))) throw new Error('componentIds не принадлежат manifest выбранной области');
   const components=[],variables=[],styles=[],gaps=[];
+  let attemptedVariables=0,attemptedStyles=0,attemptedCollections=0,attemptedVariablePublishStatuses=0,attemptedStylePublishStatuses=0;
   const relevant=new Map();
+  const unavailable=(error,gap)=>{
+    if(error?.code==='FIGMA_READ_TIMEOUT'||error?.code==='OPERATION_CANCELLED')throw error;
+    access.check();
+    gaps.push(gap);
+  };
   for (const id of selected) {
     const node=descendants.find(node=>node.id===id);
     if(!node)throw new Error('Компонент недоступен: '+id);
     let publishStatus;
-    try {publishStatus=await access.read(node.getPublishStatusAsync(),'статус компонента '+id);} catch(_error) {gaps.push({kind:'component',id,reason:'publish-status-unavailable'});continue;}
+    diagnostics.mark('componentPublishStatus',{attemptedComponentStatuses:components.length+gaps.filter(gap=>gap.kind==='component').length+1});
+    try {publishStatus=await access.read(node.getPublishStatusAsync(),'статус компонента '+id);} catch(error) {unavailable(error,{kind:'component',id,reason:'publish-status-unavailable'});continue;}
     if(!['CURRENT','CHANGED','UNPUBLISHED'].includes(publishStatus)) {gaps.push({kind:'component',id,reason:'publish-status-unavailable'});continue;}
+    diagnostics.mark('selectedDescendants');
     for (const child of [node,...('findAll' in node?node.findAll(()=>true):[])]) relevant.set(child.id,child);
     components.push({id,name:node.name,key:node.key,kind:node.type==='COMPONENT'?'component':'component_set',publishStatus,
       width:node.width,height:node.height,...(node.type==='COMPONENT'?{variantProperties:node.variantProperties??null}:{variantGroupProperties:node.variantGroupProperties??null})});
   }
+  diagnostics.count({representedComponents:components.length+gaps.filter(gap=>gap.kind==='component').length,selectedNodes:relevant.size});
+  diagnostics.mark('resourceBindings');
   const variableIds=new Set(),styleIds=new Set();
   const visitBinding=value=>{
     if(!value||typeof value!=='object')return;
@@ -180,30 +212,37 @@ async function pageScan(figma, input, access) {
       if(field in node&&typeof node[field]==='string'&&node[field])styleIds.add(node[field]);
   }
   if(variableIds.size+styleIds.size>1000)throw new Error('Слишком много связанных ресурсов (>1000); укажите меньший batch componentIds');
+  diagnostics.count({variableIds:variableIds.size,styleIds:styleIds.size});
   for(const id of [...variableIds].sort()) {
     let variable;
-    try {variable=await access.read(figma.variables.getVariableByIdAsync(id),'переменная '+id);} catch(_error) {gaps.push({kind:'variable',id,reason:'source-variable-unavailable'});continue;}
+    diagnostics.mark('variables',{attemptedVariables:++attemptedVariables});
+    try {variable=await access.read(figma.variables.getVariableByIdAsync(id),'переменная '+id);} catch(error) {unavailable(error,{kind:'variable',id,reason:'source-variable-unavailable'});continue;}
     if(!variable||variable.remote){gaps.push({kind:'variable',id,reason:'source-variable-unavailable'});continue;}
     let collection;
-    try {collection=await access.read(figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId),'коллекция '+variable.variableCollectionId);} catch(_error) {gaps.push({kind:'variable',id,reason:'collection-unavailable'});continue;}
+    diagnostics.mark('collections',{attemptedCollections:++attemptedCollections});
+    try {collection=await access.read(figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId),'коллекция '+variable.variableCollectionId);} catch(error) {unavailable(error,{kind:'variable',id,reason:'collection-unavailable'});continue;}
     if(!collection){gaps.push({kind:'variable',id,reason:'collection-unavailable'});continue;}
     if(/deprecated/i.test(String(variable.name)+' '+String(collection.name)))continue;
     let publishStatus;
-    try {publishStatus=await access.read(variable.getPublishStatusAsync(),'статус переменной '+id);} catch(_error) {gaps.push({kind:'variable',id,reason:'publish-status-unavailable'});continue;}
+    diagnostics.mark('variablePublishStatus',{attemptedVariablePublishStatuses:++attemptedVariablePublishStatuses});
+    try {publishStatus=await access.read(variable.getPublishStatusAsync(),'статус переменной '+id);} catch(error) {unavailable(error,{kind:'variable',id,reason:'publish-status-unavailable'});continue;}
     if(!['CURRENT','CHANGED','UNPUBLISHED'].includes(publishStatus)){gaps.push({kind:'variable',id,reason:'publish-status-unavailable'});continue;}
     variables.push({id,name:variable.name,key:variable.key,resolvedType:variable.resolvedType,collectionKey:collection.key,collectionName:collection.name,publishStatus});
   }
   for(const id of [...styleIds].sort()) {
     let style;
-    try {style=await access.read(figma.getStyleByIdAsync(id),'стиль '+id);} catch(_error) {gaps.push({kind:'style',id,reason:'source-style-unavailable'});continue;}
+    diagnostics.mark('styles',{attemptedStyles:++attemptedStyles});
+    try {style=await access.read(figma.getStyleByIdAsync(id),'стиль '+id);} catch(error) {unavailable(error,{kind:'style',id,reason:'source-style-unavailable'});continue;}
     if(!style||style.remote){gaps.push({kind:'style',id,reason:'source-style-unavailable'});continue;}
     if(/deprecated/i.test(String(style.name)+' '+String(style.description)))continue;
     let publishStatus;
-    try {publishStatus=await access.read(style.getPublishStatusAsync(),'статус стиля '+id);} catch(_error) {gaps.push({kind:'style',id,reason:'publish-status-unavailable'});continue;}
+    diagnostics.mark('stylePublishStatus',{attemptedStylePublishStatuses:++attemptedStylePublishStatuses});
+    try {publishStatus=await access.read(style.getPublishStatusAsync(),'статус стиля '+id);} catch(error) {unavailable(error,{kind:'style',id,reason:'publish-status-unavailable'});continue;}
     if(!['CURRENT','CHANGED','UNPUBLISHED'].includes(publishStatus)){gaps.push({kind:'style',id,reason:'publish-status-unavailable'});continue;}
     styles.push({id,name:style.name,key:style.key,styleType:style.type,publishStatus});
   }
   if (typeof figma.fileKey === 'string' && figma.fileKey !== input.fileKey) throw new Error('Целевой файл изменился во время чтения');
+  diagnostics.count({components:components.length,variables:variables.length,styles:styles.length,gaps:gaps.length});
   return {schemaVersion:1,kind:'resource-batch',fileKey:input.fileKey,pageId:page.id,rootNodeId:root.id,
     manifestFingerprint,componentIds:selected,complete:true,scanComplete:true,
     coverage:{componentIds:selected,representedComponentIds:[...components.map(value=>value.id),...gaps.filter(value=>value.kind==='component').map(value=>value.id)].sort()},
@@ -211,26 +250,34 @@ async function pageScan(figma, input, access) {
 }
 
 async function example(figma,input,access) {
+  const diagnostics=access.diagnostics;
   if (typeof figma.fileKey === 'string' && figma.fileKey !== input.fileKey) throw new Error('Неверный целевой файл');
+  diagnostics.mark('pageLookup');
   const page=await access.node(input.pageId);
   if(page.type!=='PAGE'||!figma.root.children.includes(page))throw new Error('pageId должен указывать на страницу целевого файла');
+  diagnostics.mark('pageLoad');
   await access.read(page.loadAsync(),'страница '+page.id);
+  diagnostics.mark('rootLookup');
   const root=await access.node(input.nodeId);
   let ancestor=root;
   while(ancestor&&ancestor!==page)ancestor=ancestor.parent;
   if(ancestor!==page)throw new Error('nodeId находится вне pageId');
   const all=[],stack=[root];
+  diagnostics.mark('fullTree');
   while(stack.length){access.check();
-    if(all.length && all.length % 2048 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+    if(all.length && all.length % 2048 === 0) {diagnostics.count({treeNodesVisited:all.length});await new Promise(resolve => setTimeout(resolve, 0));}
     const node=stack.pop();all.push(node);
     if('children'in node)for(let index=node.children.length-1;index>=0;index--)stack.push(node.children[index]);
   }
+  diagnostics.count({treeNodes:all.length,treeNodesVisited:all.length});
+  diagnostics.mark('fingerprint');
   const hash=value=>{let result=2166136261;for(const char of JSON.stringify(value))result=Math.imul(result^char.charCodeAt(0),16777619)>>>0;return result.toString(16);};
   const fingerprint=hash(all.map(node=>[node.id,node.type,node.name,node.parent?.id??null,'children'in node?node.children.map(child=>child.id):[],node.type==='TEXT'?node.characters:null]));
   let offset=0;
   if(input.cursor){const [position,expected]=input.cursor.split(':');if(expected!==fingerprint)throw new Error('Курсор устарел: дерево изменилось');offset=Number(position);}
   if(offset>all.length)throw new Error('Курсор вне дерева');
   const limit=input.limit??100,next=offset+limit,gaps=[];
+  diagnostics.mark('exampleNodes',{selectedExampleNodes:Math.min(limit,all.length-offset)});
   const safe=(node,field)=>{
     try {const value=node[field];return value===figma.mixed?'MIXED':value;} catch(error){gaps.push({nodeId:node.id,field,reason:'property-unavailable',message:String(error.message||error)});return undefined;}
   };
@@ -254,7 +301,7 @@ async function example(figma,input,access) {
     if(node.type==='INSTANCE'){
       try {const component=await access.read(node.getMainComponentAsync(),'исходный компонент '+node.id);
         value.mainComponent=component?{status:'resolved',id:component.id,key:component.key,name:component.name,remote:component.remote}:{status:'missing'};
-      } catch(error){value.mainComponent={status:'unavailable',message:String(error.message||error)};gaps.push({nodeId:node.id,field:'mainComponent',reason:'resource-unavailable'});}
+      } catch(error){if(error?.code==='FIGMA_READ_TIMEOUT'||error?.code==='OPERATION_CANCELLED')throw error;access.check();value.mainComponent={status:'unavailable',message:String(error.message||error)};gaps.push({nodeId:node.id,field:'mainComponent',reason:'resource-unavailable'});}
     }
     nodes.push(value);
   }
@@ -268,6 +315,6 @@ async function example(figma,input,access) {
     screenshotNodeId:input.includePng?root.id:null};
 }
 
-export const buildCatalogInventoryCode=input=>compileOperation(inventory,input,{readOnly:true});
-export const buildCatalogPageCode=input=>compileOperation(pageScan,input,{readOnly:true});
-export const buildCatalogExampleCode=input=>compileOperation(example,input,{readOnly:true});
+export const buildCatalogInventoryCode=input=>compileOperation(inventory,input,{readOnly:true,catalogDiagnostics:true});
+export const buildCatalogPageCode=input=>compileOperation(pageScan,input,{readOnly:true,catalogDiagnostics:true});
+export const buildCatalogExampleCode=input=>compileOperation(example,input,{readOnly:true,catalogDiagnostics:true});

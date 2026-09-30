@@ -510,6 +510,7 @@ figma.ui.onmessage = async (msg) => {
       if (remainingTime <= 0) {
         var expiredError = new Error('Operation expired in queue; no changes were applied.');
         expiredError.operationStatus = 'not_applied';
+        expiredError.code = 'PLUGIN_QUEUE_EXPIRED';
         throw expiredError;
       }
       figma.ui.postMessage({ type: 'OPERATION_PROGRESS', requestId: msg.requestId, state: 'running',
@@ -535,6 +536,7 @@ figma.ui.onmessage = async (msg) => {
           var timeoutError = new Error('Execution timed out after ' + timeoutMs + 'ms. Execution may still be running.');
           timeoutError.operationStatus = 'unknown';
           timeoutError.code = 'PLUGIN_EXECUTION_TIMEOUT';
+          if (executionControl.catalogDiagnosticsSnapshot) timeoutError.catalogDiagnostics = executionControl.catalogDiagnosticsSnapshot();
           reject(timeoutError);
         }, timeoutMs);
       });
@@ -636,7 +638,8 @@ figma.ui.onmessage = async (msg) => {
         nextStep: error.nextStep,
         retryPolicy: error.retryPolicy,
         fileKey: error.fileKey,
-        blockers: error.blockers
+        blockers: error.blockers,
+        catalogDiagnostics: error.catalogDiagnostics || (executionControl.catalogDiagnosticsSnapshot && executionControl.catalogDiagnosticsSnapshot())
       });
     } finally {
       if (executionTimer) clearTimeout(executionTimer);

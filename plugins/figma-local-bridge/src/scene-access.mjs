@@ -62,11 +62,39 @@ export function createSceneAccess(figma, check, loadFont = font => figma.loadFon
   return { page, dataKey, copy, node, read: readService?.wait, ancestors, onPage, editable, structural, parent, placement, stablePage, check, failWithRollback, loadFont };
 }
 
-export function compileOperation(operation, input, { mutationSafety = false, readOnly = false } = {}) {
+export function createCatalogDiagnostics() {
+  const startedAt = Date.now();
+  let phase = 'start', lastStartedPhase = 'start', phaseStartedAt = startedAt;
+  const timings = {}, counts = {};
+  return {
+    mark(next, values = {}) {
+      const now = Date.now();
+      timings[phase + 'Ms'] = (timings[phase + 'Ms'] || 0) + Math.max(0, now - phaseStartedAt);
+      lastStartedPhase = next === 'complete' ? phase : next;
+      phase = next;
+      phaseStartedAt = now;
+      Object.assign(counts, values);
+    },
+    count(values) { Object.assign(counts, values); },
+    snapshot() {
+      const now = Date.now();
+      return { phase, lastStartedPhase, elapsedMs: Math.max(0, now - startedAt),
+        phaseElapsedMs: Math.max(0, now - phaseStartedAt),
+        timings: { ...timings, [phase + 'Ms']: (timings[phase + 'Ms'] || 0) + Math.max(0, now - phaseStartedAt) },
+        counts: { ...counts } };
+    },
+  };
+}
+
+export function compileOperation(operation, input, { mutationSafety = false, readOnly = false, catalogDiagnostics = false } = {}) {
   const json = JSON.stringify(input).replaceAll("</", "<\\/");
   return `const fontService = (${createFontService.toString()})();
   const check = () => {
-    if (typeof executionControl !== "undefined" && executionControl.cancelled) throw new Error("Время операции истекло");
+    if (typeof executionControl !== "undefined" && executionControl.cancelled) {
+      const error = new Error("Время операции истекло");
+      ${catalogDiagnostics ? 'error.code = "OPERATION_CANCELLED";' : ''}
+      throw error;
+    }
   };
   const loadFont = async font => {
     await fontService.wait(figma.loadFontAsync(font), font, "загрузка исходного шрифта");
@@ -76,6 +104,16 @@ export function compileOperation(operation, input, { mutationSafety = false, rea
   const safety = ${mutationSafety ? `(${createMutationSafety.toString()})(figma, loadFont)` : "null"};
   const readService = (${createReadService.toString()})(figma, check);
   const access = (${createSceneAccess.toString()})(figma, check, loadFont, readService);
-  try { return await (${operation.toString()})(figma, ${json}, access, safety); }
-  catch (error) { ${readOnly ? 'error.operationStatus = "not_applied";' : ''} throw error; }`;
+  ${catalogDiagnostics ? `const catalogDiagnostics = (${createCatalogDiagnostics.toString()})();
+  access.diagnostics = catalogDiagnostics;
+  if (typeof executionControl !== "undefined") executionControl.catalogDiagnosticsSnapshot = () => catalogDiagnostics.snapshot();` : ''}
+  try {
+    const result = await (${operation.toString()})(figma, ${json}, access, safety);
+    ${catalogDiagnostics ? `catalogDiagnostics.mark('complete');
+    result.catalogDiagnostics = catalogDiagnostics.snapshot();` : ''}
+    return result;
+  }
+  catch (error) { ${readOnly ? 'error.operationStatus = "not_applied";' : ''}
+    ${catalogDiagnostics ? 'error.catalogDiagnostics = catalogDiagnostics.snapshot();' : ''}
+    throw error; }`;
 }

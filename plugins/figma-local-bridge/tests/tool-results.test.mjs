@@ -76,6 +76,17 @@ test('ошибка готовности сохраняет следующий ш
   assert.deepEqual(JSON.parse(response.content[0].text), response.structuredContent);
 });
 
+test('catalog phase snapshot survives remote error and MCP error envelope',async()=>{
+  const {remoteError}=await import('../src/bridge-errors.mjs');
+  const catalogDiagnostics={phase:'fullTree',lastStartedPhase:'fullTree',elapsedMs:30,phaseElapsedMs:12,
+    timings:{pageLookupMs:2,pageLoadMs:16,fullTreeMs:12},counts:{pageNodesVisited:2048}};
+  const error=remoteError('Execution timed out',{code:'PLUGIN_EXECUTION_TIMEOUT',operationStatus:'unknown',catalogDiagnostics});
+  const result=toolFailure(error);
+  assert.equal(result.structuredContent.code,'PLUGIN_EXECUTION_TIMEOUT');
+  assert.deepEqual(result.structuredContent.catalogDiagnostics,catalogDiagnostics);
+  assert.deepEqual(JSON.parse(result.content[0].text),result.structuredContent);
+});
+
 test("ошибка записи сохраняет статус отката и не запускает экспорт", async () => {
   const bridge = {
     runInFile: async (_key, operation) => operation({ fileKey: "a" }),

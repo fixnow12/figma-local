@@ -1622,7 +1622,8 @@
                 if (activeWs.readyState === 1) {
                   activeWs.send(JSON.stringify({ id: message.id, error: err.message || String(err),
                     errorDetails: { operationStatus: err.operationStatus, rollbackErrors: err.rollbackErrors,
-                      code: err.code, nextStep: err.nextStep, retryPolicy: err.retryPolicy, fileKey: err.fileKey, blockers: err.blockers } }));
+                      code: err.code, nextStep: err.nextStep, retryPolicy: err.retryPolicy, fileKey: err.fileKey, blockers: err.blockers,
+                      catalogDiagnostics: err.catalogDiagnostics } }));
                 }
               });
           } catch (e) {
@@ -2318,7 +2319,8 @@
             request.resolve(result);
           } else {
             request.resolve({ success: false, error: msg.error || 'Unknown error', operationStatus: msg.operationStatus,
-              rollbackErrors: msg.rollbackErrors, code: msg.code, nextStep: msg.nextStep, retryPolicy: msg.retryPolicy, fileKey: msg.fileKey, blockers: msg.blockers });
+              rollbackErrors: msg.rollbackErrors, code: msg.code, nextStep: msg.nextStep, retryPolicy: msg.retryPolicy, fileKey: msg.fileKey, blockers: msg.blockers,
+              catalogDiagnostics: msg.catalogDiagnostics });
           }
           window.__figmaPendingRequests.delete(msg.requestId);
         }

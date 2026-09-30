@@ -135,3 +135,161 @@ test('wrong page, stale cursor and arbitrary operation arguments are rejected',a
   assert.equal(catalogExampleSchema.safeParse({fileKey:'target',pageId:page.id,nodeId:set.id,script:'figma.setCurrentPageAsync()'}).success,false);
   assert.equal(mock.writes.length,0);
 });
+
+test('diagnostics describe full-page work for one selected component without canvas text',async()=>{
+  const {mock,page,first,label}=fixture();
+  const manifest=await run(mock,buildCatalogPageCode,{fileKey:'target',pageId:page.id,mode:'manifest'});
+  const result=await run(mock,buildCatalogPageCode,{fileKey:'target',pageId:page.id,mode:'resources',componentIds:[first.id],manifestFingerprint:manifest.manifestFingerprint});
+  assert.equal(result.catalogDiagnostics.phase,'complete');
+  assert.ok(result.catalogDiagnostics.timings.fullTreeMs>=0);
+  assert.ok(result.catalogDiagnostics.timings.selectedDescendantsMs>=0);
+  assert.ok(result.catalogDiagnostics.counts.treeNodes>result.catalogDiagnostics.counts.selectedComponents);
+  assert.equal(JSON.stringify(result.catalogDiagnostics).includes(label.characters),false);
+  const plain=await run(mock,buildCatalogPageCode,{fileKey:'target',pageId:page.id,mode:'manifest'});
+  assert.equal(plain.catalogDiagnostics.phase,'complete');
+});
+
+test('native resource timeout aborts batch with diagnostics instead of reporting a complete gap',async()=>{
+  const {mock,page,first}=fixture();
+  const manifest=await run(mock,buildCatalogPageCode,{fileKey:'target',pageId:page.id,mode:'manifest'});
+  first.getPublishStatusAsync=async()=>new Promise(()=>{});
+  await assert.rejects(run(mock,buildCatalogPageCode,{fileKey:'target',pageId:page.id,mode:'resources',componentIds:[first.id],manifestFingerprint:manifest.manifestFingerprint}),error=>{
+    assert.equal(error.code,'FIGMA_READ_TIMEOUT');
+    assert.equal(error.catalogDiagnostics.phase,'componentPublishStatus');
+    assert.equal(error.operationStatus,'not_applied');
+    return true;
+  });
+});
+
+test('cancelled resource read aborts batch instead of reporting a complete gap',async()=>{
+  const {mock,page,first}=fixture();
+  const manifest=await run(mock,buildCatalogPageCode,{fileKey:'target',pageId:page.id,mode:'manifest'});
+  const control={cancelled:false};
+  first.getPublishStatusAsync=async()=>{control.cancelled=true;return 'CURRENT';};
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+  await assert.rejects(new AsyncFunction('figma','executionControl',buildCatalogPageCode({fileKey:'target',pageId:page.id,mode:'resources',componentIds:[first.id],manifestFingerprint:manifest.manifestFingerprint}))(mock.figma,control),error=>{
+    assert.equal(error.code,'OPERATION_CANCELLED');
+    assert.equal(error.catalogDiagnostics.phase,'componentPublishStatus');
+    return true;
+  });
+});
+
+test('deprecated variable still counts as an attempted native read before a later timeout',async()=>{
+  const {mock,page,first,label}=fixture();
+  const manifest=await run(mock,buildCatalogPageCode,{fileKey:'target',pageId:page.id,mode:'manifest'});
+  mock.variables.get('var:1').name='DEPRECATED size';
+  mock.addVariable({id:'var:2',name:'Next size'});
+  label.boundVariables={fontSize:{type:'VARIABLE_ALIAS',id:'var:1'},lineHeight:{type:'VARIABLE_ALIAS',id:'var:2'}};
+  const original=mock.figma.variables.getVariableByIdAsync;
+  mock.figma.variables.getVariableByIdAsync=id=>id==='var:2'?new Promise(()=>{}):original(id);
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+  const fastTimer=(fn,ms)=>setTimeout(fn,ms===6000?5:ms);
+  await assert.rejects(new AsyncFunction('figma','setTimeout',buildCatalogPageCode({fileKey:'target',pageId:page.id,mode:'resources',componentIds:[first.id],manifestFingerprint:manifest.manifestFingerprint}))(mock.figma,fastTimer),error=>{
+    assert.equal(error.code,'FIGMA_READ_TIMEOUT');
+    assert.equal(error.catalogDiagnostics.phase,'variables');
+    assert.equal(error.catalogDiagnostics.counts.attemptedVariables,2);
+    return true;
+  });
+});
+
+test('deprecated style still counts as an attempted native read before a later API error',async()=>{
+  const {mock,page,first,label}=fixture();
+  const manifest=await run(mock,buildCatalogPageCode,{fileKey:'target',pageId:page.id,mode:'manifest'});
+  mock.styles[0].name='DEPRECATED typography';
+  label.textStyleId='style:2';
+  const original=mock.figma.getStyleByIdAsync;
+  mock.figma.getStyleByIdAsync=id=>id==='style:2'?Promise.reject(Error('offline')):original(id);
+  const result=await run(mock,buildCatalogPageCode,{fileKey:'target',pageId:page.id,mode:'resources',componentIds:[first.id],manifestFingerprint:manifest.manifestFingerprint});
+  assert.equal(result.complete,true);
+  assert.ok(result.gaps.some(gap=>gap.kind==='style'&&gap.id==='style:2'));
+  assert.equal(result.catalogDiagnostics.counts.attemptedStyles,2);
+});
+
+test('wide page snapshots children once during full-tree scan instead of repeatedly materializing the native array',async()=>{
+  const mock=createFigmaMock();mock.figma.fileKey='target';
+  const children=[];
+  for(let i=0;i<14340;i++)children.push(mock.make('RECTANGLE',{name:'Item '+i},null));
+  const component=mock.make('COMPONENT',{name:'Last',key:'last'},null);children.push(component);
+  for(const child of children)child.parent=mock.page;
+  let reads=0;
+  Object.defineProperty(mock.page,'children',{get(){reads++;return children;},configurable:true});
+  const result=await run(mock,buildCatalogPageCode,{fileKey:'target',pageId:mock.page.id,mode:'manifest'});
+  assert.deepEqual(result.componentIds,[component.id]);
+  assert.equal(result.catalogDiagnostics.counts.treeNodes,14342);
+  assert.equal(reads,1,'native children must be snapshotted once for the traversal');
+});
+
+test('full-tree yield records scheduler delay without changing traversal coverage',async()=>{
+  const mock=createFigmaMock();mock.figma.fileKey='target';
+  const children=Array.from({length:4100},()=>mock.make('RECTANGLE',{},null));
+  mock.page.children=children;for(const child of children)child.parent=mock.page;
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+  let now=1000;
+  const Clock=class extends Date {static now(){return now;}};
+  const timer=(fn,delay)=>{if(delay===0){now+=17;queueMicrotask(fn);return 0;}return setTimeout(fn,delay);};
+  const result=await new AsyncFunction('figma','setTimeout','Date',buildCatalogPageCode({fileKey:'target',pageId:mock.page.id,mode:'manifest'}))(mock.figma,timer,Clock);
+  assert.equal(result.catalogDiagnostics.counts.treeNodes,4101);
+  assert.equal(result.catalogDiagnostics.counts.treeYieldCount,2);
+  assert.equal(result.catalogDiagnostics.counts.treeYieldWaitMs,34);
+  assert.equal(result.catalogDiagnostics.counts.treeYieldPending,0);
+  assert.equal(result.catalogDiagnostics.timings.fullTreeMs,34);
+});
+
+test('cancellation while yielding stops before touching the next Figma node',async()=>{
+  const mock=createFigmaMock();mock.figma.fileKey='target';
+  const children=Array.from({length:2050},()=>mock.make('RECTANGLE',{},null));
+  mock.page.children=children;for(const child of children)child.parent=mock.page;
+  let touchedAfterCancel=0;
+  Object.defineProperty(children[2047],'children',{get(){touchedAfterCancel++;return [];},configurable:true});
+  const control={cancelled:false};
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+  const timer=(fn,delay)=>{if(delay===0){control.cancelled=true;queueMicrotask(fn);return 0;}return setTimeout(fn,delay);};
+  await assert.rejects(new AsyncFunction('figma','executionControl','setTimeout',buildCatalogPageCode({fileKey:'target',pageId:mock.page.id,mode:'manifest'}))(mock.figma,control,timer),{code:'OPERATION_CANCELLED'});
+  assert.equal(touchedAfterCancel,0);
+});
+
+test('large roles scan preserves exact coverage and rejects a file switch during yield',async()=>{
+  const mock=createFigmaMock();mock.figma.fileKey='target';
+  for(let i=0;i<14340;i++)mock.make('RECTANGLE',{},mock.page);
+  const component=mock.make('COMPONENT',{name:'Last',key:'last'},mock.page);
+  const result=await run(mock,buildCatalogPageCode,{fileKey:'target',pageId:mock.page.id,mode:'roles'});
+  assert.deepEqual(result.componentIds,[component.id]);
+  assert.equal(result.complete,true);
+  assert.equal(result.catalogDiagnostics.counts.treeNodes,14342);
+  assert.equal(mock.figma.currentPage,mock.page);
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+  const control={cancelled:false};let pending;
+  const timer=(fn,delay)=>{if(delay===0){pending??=control.catalogDiagnosticsSnapshot();mock.figma.fileKey='other';queueMicrotask(fn);return 0;}return setTimeout(fn,delay);};
+  await assert.rejects(new AsyncFunction('figma','executionControl','setTimeout',buildCatalogPageCode({fileKey:'target',pageId:mock.page.id,mode:'roles'}))(mock.figma,control,timer),/Целевой файл изменился/);
+  assert.equal(pending.phase,'fullTree');
+  assert.equal(pending.counts.treeYieldPending,1);
+  assert.equal(pending.counts.treeNodesVisited,2048);
+});
+
+test('branched large roles preserve all tagged roles and stable fingerprints; empty page has no roles',async()=>{
+  const mock=createFigmaMock();mock.figma.fileKey='target';
+  const set=mock.make('COMPONENT_SET',{id:'set-z',name:'Set'},mock.page);
+  mock.make('COMPONENT',{id:'component-b',name:'B'},set);
+  mock.make('COMPONENT',{id:'component-a',name:'A'},set);
+  const frame=mock.make('FRAME',{id:'frame-a',name:'Example'},mock.page);
+  mock.make('TEXT',{characters:'Text'},frame);
+  const filler=mock.make('FRAME',{name:'Empty branch'},mock.page);
+  const children=Array.from({length:14340},()=>mock.make('RECTANGLE',{},null));
+  filler.children=children;for(const node of children)node.parent=filler;
+  const parts=[];let cursor;
+  do {const part=await run(mock,buildCatalogPageCode,{fileKey:'target',pageId:mock.page.id,mode:'roles',limit:2,...(cursor?{cursor}:{})});parts.push(part);cursor=part.nextCursor;}while(cursor);
+  assert.deepEqual(parts.flatMap(p=>p.componentIds),['component-a','component-b','set-z']);
+  assert.deepEqual(parts.flatMap(p=>p.exampleCandidates),[
+    {id:'frame-a',name:'Example',type:'FRAME'},
+    {id:'set-z',name:'Set',type:'COMPONENT_SET',variantIds:['component-a','component-b']},
+  ]);
+  assert.deepEqual(parts.map(p=>p.coverage.returned),[2,2,1]);
+  assert.deepEqual(parts.map(p=>p.total),[5,5,5]);
+  assert.equal(new Set(parts.map(p=>p.fingerprint)).size,1);
+  assert.equal(parts[0].fingerprint,'d52f2e5d');
+  assert.equal(parts.at(-1).complete,true);
+  const empty=createFigmaMock();empty.figma.fileKey='target';
+  const result=await run(empty,buildCatalogPageCode,{fileKey:'target',pageId:empty.page.id,mode:'roles'});
+  assert.deepEqual(result.componentIds,[]);assert.deepEqual(result.exampleCandidates,[]);
+  assert.equal(result.total,0);assert.equal(result.complete,true);assert.equal(result.nextCursor,null);
+});

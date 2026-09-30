@@ -6,6 +6,7 @@ import { buildInspectCode, buildPatchCode, buildRenderCode, buildUseComponentCod
 import { buildFindAssetsCode } from "../src/asset-catalog.mjs";
 import { normalizeScreenSpec } from "../src/schemas.mjs";
 import { createFigmaMock } from "./helpers/figma-mock.mjs";
+import { buildCatalogPageCode } from '../src/catalog-read.mjs';
 
 async function executionHandler(figma, globals = {}) {
   const source = await readFile(new URL("../src/figma-plugin/code.js", import.meta.url), "utf8");
@@ -55,6 +56,24 @@ test("тайм-аут не освобождает очередь до завер
   assert.deepEqual(handler.messages.filter((message) => message.type === "OPERATION_PROGRESS").map((message) => [message.requestId, message.state]), [["first", "queued"], ["second", "queued"], ["first", "running"], ["second", "running"]]);
 });
 
+test('outer catalog timeout retains latest phase snapshot while native page load is pending',async()=>{
+  const mock=createFigmaMock();mock.figma.fileKey='target';
+  let release;
+  const gate=new Promise(resolve=>{release=resolve;});
+  mock.page.loadAsync=()=>gate;
+  const handler=await executionHandler(mock.figma);
+  const pending=handler.result('catalog');
+  const running=handler.run('catalog',buildCatalogPageCode({fileKey:'target',pageId:mock.page.id,mode:'manifest'}),5,
+    {operation:{name:'scan_catalog_page',mutating:false}});
+  try{
+    const result=await pending;
+    assert.equal(result.code,'PLUGIN_EXECUTION_TIMEOUT');
+    assert.equal(result.operationStatus,'unknown');
+    assert.equal(result.catalogDiagnostics.phase,'pageLoad');
+    assert.ok(result.catalogDiagnostics.timings.pageLookupMs>=0);
+  }finally{release();await running;}
+});
+
 test('команда, задержавшаяся до приёма Plugin API, не выполняется после активации вкладки', async () => {
   const mock = createFigmaMock();
   const events = [];
@@ -63,6 +82,7 @@ test('команда, задержавшаяся до приёма Plugin API, �
   assert.deepEqual(events, []);
   const result = handler.messages.find(msg => msg.type === 'EXECUTE_CODE_RESULT');
   assert.equal(result.operationStatus, 'not_applied');
+  assert.equal(result.code,'PLUGIN_QUEUE_EXPIRED');
   assert.equal((await handler.probe()).busy, false);
 });
 
@@ -326,4 +346,30 @@ for(const delayed of [false,true]) test(`sandbox eval receives explicit executio
  assert.deepEqual(events.map(e=>e.stage),delayed?['native-import','variable-read','settled']:['native-import','variable-read','collection-read','verified','settled']);
  assert.equal(events[1].id,variable.id);assert.equal(reads,delayed?0:1);
  assert.equal(events.at(-1).success,!delayed);
+});
+
+test('outer catalog timeout preserves a pending full-tree yield and keeps the queue busy until it settles',async()=>{
+  const mock=createFigmaMock();mock.figma.fileKey='target';
+  const children=Array.from({length:2050},()=>mock.make('RECTANGLE',{},null));
+  mock.page.children=children;for(const node of children)node.parent=mock.page;
+  let release;
+  const handler=await executionHandler(mock.figma,{setTimeout(fn,delay){
+    if(delay===0){release=fn;return 0;}
+    return setTimeout(fn,delay);
+  }});
+  const pending=handler.result('yield-timeout');
+  const running=handler.run('yield-timeout',buildCatalogPageCode({fileKey:'target',pageId:mock.page.id,mode:'manifest'}),100,
+    {operation:{name:'scan_catalog_page',mutating:false}});
+  try{
+    const result=await pending;
+    assert.equal(result.code,'PLUGIN_EXECUTION_TIMEOUT');
+    assert.equal(result.operationStatus,'unknown');
+    assert.equal(result.success,false);
+    assert.equal(result.catalogDiagnostics.phase,'fullTree');
+    assert.equal(result.catalogDiagnostics.counts.treeNodesVisited,2048);
+    assert.equal(result.catalogDiagnostics.counts.treeYieldPending,1);
+    assert.ok(Number.isFinite(result.catalogDiagnostics.counts.treeYieldStartedAtMs));
+    assert.equal((await handler.probe()).busy,true);
+  }finally{release?.();await running;}
+  assert.equal((await handler.probe()).busy,false);
 });
