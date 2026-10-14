@@ -136,3 +136,8 @@ test('замер ошибки подключения сохраняет unknown 
     [['resolveTarget', 'error']]);
   assert.deepEqual(JSON.parse(response.content[0].text), response.structuredContent);
 });
+test('catalog progress skips PNG until a verified snapshot has an exact screenshot node',async()=>{
+ const bridge={runInFile:async(key,fn)=>fn({fileKey:key}),execute:async()=>({result:{complete:false,total:null,screenshotNodeId:null}}),captureScreenshot:async()=>{throw Error('must not capture incomplete traversal');}};
+ const result=await runToolOperation(bridge,{fileKey:'fixture'},'typed fixture',{mutating:false,screenshotRequested:p=>Boolean(p.result.screenshotNodeId),screenshotNode:p=>p.result.screenshotNodeId});
+ assert.equal(result.isError,undefined);assert.equal(result.structuredContent.result.complete,false);assert.equal(result.structuredContent.result.total,null);assert.equal(result.structuredContent.screenshot,undefined);assert.equal(result.structuredContent.warnings,undefined);
+});

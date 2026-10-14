@@ -1,0 +1,82 @@
+{
+  "$ref": "#/definitions/ScanCatalogPage",
+  "definitions": {
+    "ScanCatalogPage": {
+      "type": "object",
+      "properties": {
+        "fileKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "nodeId": {
+          "$ref": "#/definitions/ScanCatalogPage/properties/pageId"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "roles",
+            "manifest",
+            "resources"
+          ]
+        },
+        "cursor": {
+          "type": "string",
+          "pattern": "^(?:\\d+:[0-9a-f]{1,8}|(?:walk|verify):[a-zA-Z0-9_-]{1,80}:\\d+)$"
+        },
+        "traversalId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+        },
+        "verificationId": {
+          "$ref": "#/definitions/ScanCatalogPage/properties/traversalId"
+        },
+        "requireExistingSnapshot": {
+          "type": "boolean"
+        },
+        "releaseTraversalIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+          },
+          "maxItems": 200
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "componentIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ScanCatalogPage/properties/pageId"
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "manifestFingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{1,8}$"
+        },
+        "componentPublishStatusTimeoutMs": {
+          "type": "integer",
+          "minimum": 6000,
+          "maximum": 20000,
+          "description": "Только resources: конечное ожидание каждого getPublishStatusAsync компонента; default 6000 ms, без повторов и изменения общего deadline"
+        }
+      },
+      "required": [
+        "fileKey",
+        "pageId",
+        "mode"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

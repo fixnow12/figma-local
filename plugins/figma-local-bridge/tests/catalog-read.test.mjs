@@ -8,7 +8,7 @@ function fixture(){
   const mock=createFigmaMock();
   mock.figma.fileKey='target';
   const page=mock.make('PAGE',{name:'Каталог'},null);mock.figma.root.children.push(page);
-  const set=mock.make('COMPONENT_SET',{name:'Chip',key:'set-key',variantGroupProperties:{State:{values:['Default','Hover']}},getPublishStatusAsync:async()=> 'CURRENT'},page);
+  const set=mock.make('COMPONENT_SET',{name:'Chip',key:'set-key',componentPropertyDefinitions:{State:{type:'VARIANT',defaultValue:'Default',variantOptions:['Default','Hover']}},getPublishStatusAsync:async()=> 'CURRENT'},page);
   const first=mock.make('COMPONENT',{name:'State=Default',key:'first-key',variantProperties:{State:'Default'},getPublishStatusAsync:async()=> 'CURRENT'},set);
   const second=mock.make('COMPONENT',{name:'State=Hover',key:'second-key',variantProperties:{State:'Hover'},getPublishStatusAsync:async()=> 'CHANGED'},set);
   const label=mock.make('TEXT',{characters:'Точный текст',fontSize:16,fillStyleId:'style:1',boundVariables:{fontSize:{type:'VARIABLE_ALIAS',id:'var:1'}}},first);
@@ -68,6 +68,7 @@ test('resource batch covers exact IDs and records unavailable publish status as 
   const batch=await run(mock,buildCatalogPageCode,catalogPageSchema.parse({fileKey:'target',pageId:page.id,mode:'resources',componentIds:[set.id,first.id,second.id],manifestFingerprint:manifest.manifestFingerprint}));
   assert.equal(batch.complete,true);assert.deepEqual(batch.coverage.representedComponentIds,[first.id,second.id,set.id].sort());
   assert.equal(batch.components.find(item=>item.id===set.id).kind,'component_set');
+  assert.deepEqual(batch.components.find(item=>item.id===set.id).variantGroupProperties,{State:{values:['Default','Hover']}});
   assert.equal(batch.components.find(item=>item.id===first.id).kind,'component');
   assert.ok(batch.gaps.some(item=>item.id===second.id&&item.reason==='publish-status-unavailable'));
   assert.ok(batch.variables.some(item=>item.id==='var:1'&&item.publishStatus==='UNPUBLISHED'));
@@ -76,6 +77,19 @@ test('resource batch covers exact IDs and records unavailable publish status as 
   assert.deepEqual(failedOnly.gaps,[{kind:'component',id:second.id,reason:'publish-status-unavailable'}]);
   await assert.rejects(run(mock,buildCatalogPageCode,{fileKey:'target',pageId:page.id,mode:'resources',componentIds:[set.id],manifestFingerprint:'bad'}),/Manifest изменился/);
   assert.equal(mock.writes.length,0);
+});
+
+test('resource set definitions fail closed without a legacy getter fallback',async()=>{
+  for(const definitions of [undefined,{}, {State:{type:'VARIANT',defaultValue:'Missing',variantOptions:['Default']}}]){
+    const {mock,page,set}=fixture();set.componentPropertyDefinitions=definitions;mock.writes.length=0;
+    Object.defineProperty(set,'variantGroupProperties',{get(){throw Error('legacy getter must not be read');}});
+    const manifest=await run(mock,buildCatalogPageCode,{fileKey:'target',pageId:page.id,mode:'manifest'});
+    await assert.rejects(run(mock,buildCatalogPageCode,{fileKey:'target',pageId:page.id,mode:'resources',componentIds:[set.id],manifestFingerprint:manifest.manifestFingerprint}),error=>{
+      assert.equal(error.code,'CATALOG_PROPERTY_UNAVAILABLE');assert.equal(error.catalogSource.field,'componentPropertyDefinitions');
+      assert.doesNotMatch(error.catalogSource.message,/legacy getter/);return true;
+    });
+    assert.equal(mock.writes.length,0);
+  }
 });
 
 test('variant component with non-readable property definitions stays a complete example',async()=>{

@@ -56,6 +56,7 @@ export function createFigmaMock() {
         return duplicate(this, this.parent);
       },
     };
+    if (type === "SECTION") raw.resizeWithoutConstraints = function(width,height) { this.width=width; this.height=height; };
     if (["PAGE", "SECTION", "FRAME", "COMPONENT", "COMPONENT_SET", "INSTANCE"].includes(type)) {
       Object.assign(raw, {
         children: [], selection: [], layoutMode: type === "PAGE" ? "NONE" : "VERTICAL",

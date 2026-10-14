@@ -29,6 +29,7 @@ function fixture() {
       remove() { for (const child of [...(this.children || [])]) child.remove(); this.parent?.children.splice(this.parent.children.indexOf(this), 1); nodes.delete(this.id); this.removed = true; },
       async setEffectStyleIdAsync(id) { if (id && styles.get(id)?.type !== "EFFECT") throw new Error("Missing effect style"); this.effectStyleId = id; this.effects = structuredClone(styles.get(id)?.effects || []); },
     };
+    if (type === "SECTION") node.resizeWithoutConstraints = function(w,h) { this.width=w; this.height=h; };
     if (["PAGE", "SECTION", "FRAME"].includes(type)) Object.assign(node, {
       children: [], layoutMode: "NONE", layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED",
       appendChild(child) { if (child.parent) child.parent.children.splice(child.parent.children.indexOf(child), 1); this.children.push(child); child.parent = this; },

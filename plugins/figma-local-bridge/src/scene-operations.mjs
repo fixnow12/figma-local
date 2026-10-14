@@ -1,3 +1,4 @@
+import { transferPageNodes } from "./page-transfer.mjs";
 import { compileOperation } from "./scene-access.mjs";
 
 async function cloneNodes(figma, input, access) {
@@ -167,4 +168,4 @@ async function moveNodes(figma, input, access) {
 }
 
 export const buildCloneCode = (input) => compileOperation(cloneNodes, input);
-export const buildMoveCode = (input) => compileOperation(moveNodes, input);
+export const buildMoveCode = (input) => compileOperation(input.pageTransfer ? transferPageNodes : moveNodes, input);

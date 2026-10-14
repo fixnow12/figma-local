@@ -14,3 +14,11 @@
 ## Проверка ключей уже доступных ресурсов
 
 `resolve_resource_keys({fileKey, variableIds?, nodeIds?})` читает 1–100 точных ID из фактического дерева. Возвращает ключи переменных с типом и коллекцией, а для COMPONENT/COMPONENT_SET — библиотечный `key` отдельно от `semanticKey`. Ответ не доказывает публикацию локального компонента. Инструмент не импортирует ресурсы и не меняет холст; недоступные ID остаются `unresolved`. Полный ответ сохраняй как доказательство соответствия ID и key, не выводи key из строки ID.
+
+## Точная замена вложенного instance
+
+`swap_nested_components` доступен при capability `nested-component-swaps-v1`. Он изменяет только вложенные INSTANCE в недавно созданном рабочем instance; изменение оригинала библиотеки запрещено. До вызова нужны точные `fileKey/pageId`, root ID и semantic key, parent ID/key, root mainComponent ID/key и `creationOperationId` settled verified операции `use_component`, создавшей этот root. Передай стабильные `operationId` (UUID) и `operationKey`, полные `baselineNested`/`expectedNested` пути всех вложенных INSTANCE и 1–16 замен `swaps` в порядке от родителей к потомкам. Каждая замена содержит точные `childPath`, `fromLibraryKey`, уже доступные `sourceId/libraryKey`, `variant` и при наличии варианта `librarySetKey`. Инструмент сам ничего не импортирует.
+
+Операция явно присваивает `mainComponent`: сбрасывает у заменяемого экземпляра наследуемые overrides. Поэтому выполняй её до восстановления согласованных свойств, текста, расположения и bindings. До первой записи проверяется достижимость всей конечной структуры; между заменами и после них читается полное дерево (до 1000 узлов). Потомки могут получить новые ID: отбрось старые descendant maps и выполни свежий полный `inspect_selection` перед следующими patches.
+
+Журнал сохраняет исходные аргументы и не разрешает повторную отправку той же операции, включая после рестарта. После потери ответа вызови `get_operation_status` по сохранённому operationId. Продолжение допустимо только при точных аргументах, `settled:true`, `stage/state:verified`, `operationStatus:applied`, `resourceId` равном root и совпадающем свежем полном native read-back. `partial`, `unknown` и незавершённые операции блокируют дальнейшую сборку; автоматический rollback или replay отсутствуют. Обход квот и Starter-ограничений не допускается.

@@ -1,5 +1,7 @@
 # Переносимый библиотечный шаблон
 
+Кандидат поставки: `0.3.0+codex.20261014-portable-suite`. Runtime package остаётся `0.3.0`; зависимости и lockfile не изменены. Офлайн-схемы и mock-тесты не подтверждают установку, живой Figma READY или пользовательский сценарий. Состав и ограничения: [интеграция каталога и гайдов](docs/portable-suite.md).
+
 Контекст файла: `get_file_metadata` читает имя, thumbnail и страницы. `set_file_metadata({fileKey,thumbnailNodeId})` устанавливает thumbnail; необязательный `name` служит только точной проверкой уже установленного имени. Несовпадение — `FILE_RENAME_UNSUPPORTED` / `not_applied` до любых записей thumbnail. Plugin API [не позволяет менять figma.root.name](https://developers.figma.com/docs/plugins/api/DocumentNode/); переименование выполняется отдельно пользователем в Figma, затем подтверждается чтением. Совпадающее имя не записывается; при ошибке откатывается только принадлежащее операции изменение thumbnail.
 
 `capture_library_template({fileKey,pageIds})` выполняет отдельное чтение исходных страниц. Сохраните `result.snapshot` локально. Снимок v2 содержит полное дерево со скрытыми ветками, реальные библиотечные ключи, source-relative пути и точные переопределения. Capture не импортирует и не меняет ресурсы исходника.
@@ -22,7 +24,7 @@ Read-back первой сборки проверяет дерево, библи�
 
 ### Проверка точности guide-fidelity v2
 
-Кандидат `0.3.0+codex.20260920-variable-import` расширяет существующие команды:
+Кандидат `0.3.0+codex.20261014-portable-suite` расширяет существующие команды:
 
 - `render_screen` и `patch_nodes`: `listOptions: {type: "NONE" | "ORDERED" | "UNORDERED"}`, `listSpacing`, `indentation`, в том числе в `textRuns`. `listOptions` и `indentation` используют диапазонный API Figma; пустой текст не поддерживает такие диапазоны.
 - Эффект `GLASS`: `radius`, `refraction` (0–1), `depth` (от 1), `lightAngle`, `lightIntensity` (0–1), `dispersion` (0–1), необязательные `splay` и `visible`. `splay` сохранён по фактическому чтению Figma; публичные typings его ещё не описывают. Сохранение подтверждается живым read-back. GLASS не поддерживает переменные эффекта.
@@ -33,7 +35,7 @@ Read-back первой сборки проверяет дерево, библи�
 
 `inspect_selection(detail:"full")` возвращает `scaleFactor`, `booleanOperation`, `pointCount`, свойства списков и `textSegments` с красками и диапазонными `boundVariables`. `check-render-result` сравнивает новые свойства и GLASS без допуска, textRuns — по всем покрывающим сегментам. Неописанные свойства и визуальное сходство требуют отдельной проверки.
 
-Блокировку старого Bridge можно снять только после свежего `get_status({fileKey})`: нужны `diagnostics.ready`, все три `diagnostics.current` и живой ответ Plugin API. `diagnostics.capabilityFileKey` равен назначению; `diagnostics.mcp.revision` совпадает с исходниками. `diagnostics.capabilities` перечисляет `text-lists-v1`, `glass-effects-v1`, `vector-properties-v1`, `text-range-variables-v1`, `navigate-scroll-default-v1`, `instance-scale-v1`. Без конкретного файла, живого ответа или при устаревшем runtime список пуст. Версия пакета сама по себе не подтверждает поддержку.
+Блокировку старого Bridge можно снять только после свежего `get_status({fileKey})`: нужны `diagnostics.ready`, все три `diagnostics.current` и живой ответ Plugin API. `diagnostics.capabilityFileKey` равен назначению; `diagnostics.mcp.revision` совпадает с исходниками. `diagnostics.capabilities` перечисляет `text-lists-v1`, `glass-effects-v1`, `vector-properties-v1`, `text-range-variables-v1`, `navigate-scroll-default-v1`, `instance-scale-v1`, `node-variable-modes-v1`, `nested-component-swaps-v1`, `component-set-import-v1`, `page-transfer-v1` и при доступном журнале `operation-journal-v1`. Без конкретного файла, живого ответа или при устаревшем runtime список пуст. Версия пакета сама по себе не подтверждает поддержку.
 
 Локальный MCP-кандидат: `node ./src/server.mjs`, cwd корня плагина, существующий `FIGMA_LOCAL_STATE_DIR`. Завершите операции старого процесса, подключите новый и проверьте целевой fileKey. Персональная сборка — `npm run prepare:local`; перед обновлением рабочего каталога установки сохраните его копию. Проверки: `npm test`, `npm run schema:check`, `npm run verify`. Последняя проверяет новый MCP-каталог и не доказывает переключение уже открытого чата.
 

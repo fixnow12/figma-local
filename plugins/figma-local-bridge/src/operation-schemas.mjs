@@ -44,6 +44,7 @@ export const cloneNodesSchema = z.object(cloneNodesInputSchema).strict().superRe
 });
 
 export const moveNodesInputSchema = {
+  pageTransfer: z.object({ sourcePageId: id(), targetPageId: id() }).strict().optional().describe("Явный перенос верхнеуровневых FRAME/SECTION между двумя существующими Pages одного файла; требует fileKey и parentId=targetPageId у всех moves"),
   moves: z.array(z.object({
     id: id(), parentId: id().optional(), index: z.number().int().nonnegative().optional(), position: position().optional(),
   }).strict().refine((item) => item.parentId !== undefined || item.index !== undefined || item.position !== undefined, "Укажите parentId, index или position")).min(1).max(100),
@@ -52,7 +53,12 @@ export const moveNodesInputSchema = {
 export const moveNodesSchema = z.object(moveNodesInputSchema).strict().refine(
   (input) => new Set(input.moves.map((item) => item.id)).size === input.moves.length,
   "Каждый узел может перемещаться только один раз в пакете",
-);
+).superRefine((input, context) => {
+  if (!input.pageTransfer) return;
+  if (!input.fileKey || input.pageTransfer.sourcePageId === input.pageTransfer.targetPageId || input.moves.some(item => item.parentId !== input.pageTransfer.targetPageId)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "pageTransfer требует fileKey, разные sourcePageId/targetPageId и parentId=targetPageId у всех moves" });
+  }
+});
 
 export const findAssetsInputSchema = {
   kind: z.enum(["nodes", "components", "styles", "variables", "library_collections", "library_variables"])
