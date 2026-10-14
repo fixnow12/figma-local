@@ -1,0 +1,28 @@
+{
+  "$ref": "#/definitions/ReadComponentMetadata",
+  "definitions": {
+    "ReadComponentMetadata": {
+      "type": "object",
+      "properties": {
+        "fileKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "pageId": {
+          "$ref": "#/definitions/ReadComponentMetadata/properties/fileKey"
+        },
+        "nodeId": {
+          "$ref": "#/definitions/ReadComponentMetadata/properties/fileKey"
+        }
+      },
+      "required": [
+        "fileKey",
+        "pageId",
+        "nodeId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

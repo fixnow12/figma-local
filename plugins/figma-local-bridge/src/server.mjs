@@ -1,3 +1,8 @@
+import {readNodeScopeInputSchema,readNodeScopeSchema,buildReadNodeScopeCode} from './node-scope.mjs';
+import {readTextStyleInputSchema,readTextStyleSchema,buildReadTextStyleCode} from './read-text-style.mjs';
+import {readComponentMetadataInputSchema,readComponentMetadataSchema,buildReadComponentMetadataCode} from './component-metadata.mjs';
+import {nestedSwapInputSchema,nestedSwapSchema,buildNestedSwapCode} from './nested-swap.mjs';
+import {recoverComponentDryRunInputSchema,recoverComponentDryRunSchema} from './component-dry-run-recovery.mjs';
 import {resolveVariablesInputSchema, resolveVariablesSchema, buildResolveVariablesCode} from './resolve-variables.mjs';
 import {resolveResourceKeysInputSchema,resolveResourceKeysSchema,buildResolveResourceKeysCode} from './resolve-resource-keys.mjs';
 import {importVariablesInputSchema, importVariablesSchema, buildImportVariablesCode} from './import-variables.mjs';
@@ -23,7 +28,7 @@ import { setNodeVariableModesInputSchema, setNodeVariableModesSchema, buildSetNo
 import { getPageSettingsInputSchema, getPageSettingsSchema, setPageSettingsInputSchema, setPageSettingsSchema, buildGetPageSettingsCode, buildSetPageSettingsCode } from './page-settings.mjs';
 import { captureLibraryTemplateInputSchema, captureLibraryTemplateSchema, assembleLibraryTemplateInputSchema, assembleLibraryTemplateSchema, buildCaptureLibraryTemplateCode, buildAssembleLibraryTemplateCode } from './library-template.mjs';
 import { BrokerClient } from "./broker-client.mjs";
-import { runtimeDiagnostics } from "./runtime-info.mjs";
+import { runtimeInfo, sourceRevision, runtimeDiagnostics } from "./runtime-info.mjs";
 import { exportAssetsInputSchema, exportAssetsSchema, buildExportAssetsCode } from "./export-assets.mjs";
 import { catalogInventoryInputSchema, catalogInventorySchema, catalogPageInputSchema, catalogPageSchema, catalogExampleInputSchema, catalogExampleSchema, buildCatalogInventoryCode, buildCatalogPageCode, buildCatalogExampleCode } from './catalog-read.mjs';
 import { recreateScreenInputSchema, recreateScreen } from "./reconstruction.mjs";
@@ -221,7 +226,7 @@ server.registerTool(
   {
     title: "Создать экземпляр компонента",
     description:
-      "Создаёт instance локального COMPONENT/COMPONENT_SET по sourceKey или sourceId либо библиотечного компонента по libraryKey. dryRun импортирует и проверяет источник без создания instance. Родитель задаётся parentKey/parentId; поддержаны variant и componentProperties. При сбое настройки удаляет созданный instance.",
+      "Создаёт instance локального COMPONENT/COMPONENT_SET по sourceKey или sourceId либо библиотечного компонента по libraryKey. librarySetKey требует точный set key, child libraryKey и непустой variant: импортирует set, выбирает ровно один direct COMPONENT и сверяет child key без fallback. Требует runtime capability component-set-import-v1. dryRun импортирует и проверяет источник без создания instance. Родитель задаётся parentKey/parentId; поддержаны variant и componentProperties. При сбое настройки удаляет созданный instance.",
     inputSchema: useComponentInputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   },
@@ -256,6 +261,28 @@ function registerGeneratedTool(name, config, schema, buildCode, { mutating = tru
   });
 }
 
+
+registerGeneratedTool('read_node_scope', {
+  title:'Прочитать точный узел и его ancestry',
+  description:'Read-only diagnostic: точные fileKey/nodeId, только ID/type/name узла, ancestry до owning PAGE и доступная height с явной ошибкой getter. Без page.loadAsync, descendants, component/variant getters, импорта и записи. catalogEligible=false; не является полным чтением макета.',
+  inputSchema:readNodeScopeInputSchema,
+  annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true},
+},readNodeScopeSchema,buildReadNodeScopeCode,{mutating:false});
+
+registerGeneratedTool('read_component_metadata', {
+  title:'Прочитать метаданные одного компонента',
+  description:'Точный fileKey/pageId/nodeId: только ID/type/name узла и прямого родителя, componentPropertyDefinitions. Без legacy variantGroupProperties, descendants, публикационного статуса, импорта или изменений холста. Ошибка getter сохраняется отдельно от metadata; variant COMPONENT возвращает not_applicable.',
+  inputSchema:readComponentMetadataInputSchema,
+  annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true},
+},readComponentMetadataSchema,buildReadComponentMetadataCode,{mutating:false});
+
+registerGeneratedTool('read_text_style', {
+  title:'Прочитать применённый TEXT стиль',
+  description:'Read-only чтение одного native TEXT style по непрозрачному styleId и 1–20 точным TEXT nodeIds внутри rootId. Проверяет owning PAGE через родителей без переключения страницы, полное UTF-16 покрытие и прямые variable dependencies. Mixed/неполные/недоступные данные отклоняются целиком. Результат schemaVersion=1, kind=referenced-text-style; не импортирует и не назначает стиль.',
+  inputSchema:readTextStyleSchema,
+  annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true},
+},readTextStyleSchema,buildReadTextStyleCode,{mutating:false});
+
 registerGeneratedTool('read_catalog_inventory', {
   title:'Прочитать страницы источника каталога',
   description:'Читает все страницы точно указанного файла; nodeId дополнительно устанавливает область источника. Не переключает страницу и выделение. Контракт результата schemaVersion=1, kind=inventory.',
@@ -270,6 +297,7 @@ registerGeneratedTool('scan_catalog_page', {
   annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true},
 },catalogPageSchema,buildCatalogPageCode,{mutating:false});
 
+
 server.registerTool('read_catalog_example', {
   title:'Прочитать пример каталога',
   description:'Полное дерево известного узла на pageId с пагинацией до 200 узлов: childIds, parentId, тексты, оформление, Variable bindings и происхождение экземпляров. includePng прикладывает PNG отдельным image block. Не переключает страницу и выделение. Контракт schemaVersion=1.',
@@ -280,7 +308,7 @@ server.registerTool('read_catalog_example', {
     const parsed=catalogExampleSchema.parse(input);
     return await runToolOperation(bridge,parsed,buildCatalogExampleCode(parsed),{
       operationName:'read_catalog_example',mutating:false,
-      screenshotRequested:Boolean(parsed.includePng),screenshotNode:payload=>payload.result?.screenshotNodeId,
+      screenshotRequested:payload=>Boolean(parsed.includePng && payload.result?.screenshotNodeId),screenshotNode:payload=>payload.result?.screenshotNodeId,
     });
   } catch(error) {return fail(error);}
 });
@@ -335,10 +363,23 @@ registerGeneratedTool('resolve_variables', {
 }, resolveVariablesSchema, buildResolveVariablesCode, {mutating:false});
 
 server.registerTool('get_operation_status', {
- title:'Прочитать сохранённое состояние импорта', description:'Читает журнал операции без обращения к холсту. Не повторяет импорт. settled подтверждает завершение native-вызова; ID требует свежего resolve_variables.',
+ title:'Прочитать сохранённое состояние импорта', description:'Читает журнал операции без обращения к холсту. Не повторяет импорт. settled снимает блокировку; recovery может оставить nativeImportOutcome unknown. Проверяйте operationStatus и recovery; ID требует свежего resolve_variables.',
  inputSchema:{fileKey:z.string().min(1),operationId:z.string().uuid()},
  annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true},
 },async input=>{try{if(typeof bridge.operationStatus!=='function')throw Object.assign(Error('Журнал доступен только через broker'),{code:'OPERATION_JOURNAL_UNAVAILABLE',operationStatus:'not_applied',commandSent:false});return ok(await bridge.operationStatus(input));}catch(error){return fail(error);}});
+
+
+server.registerTool('recover_component_dry_run', {
+ title:'Завершить блокировку отключённого dryRun компонента',
+ description:'Только use_component dryRun:true без событий/ID на отключённом старом соединении. Broker проверяет новую текущую сборку, idle до/после и полное отсутствие стабильного ключа во всех страницах. Сохраняет исходный журнал, settled:true и operationStatus:unknown: canvasMutationExcluded:true, nativeImportOutcome:unknown. Импорт не повторяется и повторный импорт того же libraryKey запрещён. Холст не изменяется.',
+ inputSchema:recoverComponentDryRunInputSchema,
+ annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true},
+},async input=>{try{
+ const parsed=recoverComponentDryRunSchema.parse(input);
+ if(runtimeInfo.revision!==sourceRevision())throw Object.assign(Error('MCP устарел'),{code:'MCP_OUTDATED',operationStatus:'not_applied',commandSent:false});
+ if(typeof bridge.recoverComponentDryRun!=='function')throw Object.assign(Error('Recovery доступен только через broker'),{code:'OPERATION_JOURNAL_UNAVAILABLE',operationStatus:'not_applied',commandSent:false});
+ return ok(await bridge.recoverComponentDryRun(parsed));
+}catch(error){return fail(error);}});
 
 registerGeneratedTool('import_variables', {
   title: 'Импортировать библиотечные переменные',
@@ -370,7 +411,7 @@ registerGeneratedTool("set_file_metadata", {
 
 registerGeneratedTool("export_assets", {
   title: "Экспортировать иконки и изображения",
-  description: "Читает только указанные nodeIds: format=svg возвращает SVG для повторной сборки редактируемых иконок и логотипов; format=images — исходные байты IMAGE-заливок и crop/filters. Не экспортируйте целый экран вместо воссоздания слоёв. Ограничивает объём, сообщает пропуски и ошибки. Холст не меняет.",
+  description: "Читает только указанные nodeIds: format=svg возвращает SVG для повторной сборки редактируемых иконок и логотипов; format=images — исходные байты IMAGE-заливок и crop/filters; format=png — исходный PNG точных узлов при явных fileKey/pageId и scale=1, без уменьшения и обрезки, с nativeBounds отдельно от pixelWidth/pixelHeight. PNG возвращает весь запрошенный набор в пределах maxBytes либо ошибку. Не экспортируйте целый экран вместо воссоздания слоёв. Ограничивает объём, сообщает пропуски и ошибки. Холст не меняет.",
   inputSchema: exportAssetsInputSchema,
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
 }, exportAssetsSchema, buildExportAssetsCode, { mutating: false });
@@ -388,6 +429,13 @@ registerGeneratedTool("set_reactions", {
   inputSchema: setReactionsInputSchema,
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
 }, setReactionsSchema, buildSetReactionsCode);
+
+registerGeneratedTool('swap_nested_components', {
+  title:'Восстановить точные вложенные компоненты',
+  description:'Заменяет mainComponent только внутри указанного созданного INSTANCE, сбрасывает его вложенные overrides. Требует точные исходные/целевые ключи, sourceId, variant, parent-before-child пути и стабильный operationKey. Полностью проверяет источники и дерево перед записью, заново читает потомков после каждой замены. Свойства/привязки восстанавливаются отдельными typed-командами после read-back. Повторы запрещены долговечным журналом; partial/unknown не повторять.',
+  inputSchema:nestedSwapInputSchema,
+  annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:true},
+},nestedSwapSchema,buildNestedSwapCode);
 
 registerGeneratedTool("clone_nodes", {
   title: "Скопировать элементы",

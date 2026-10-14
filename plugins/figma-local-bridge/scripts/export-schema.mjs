@@ -1,8 +1,11 @@
+import {readNodeScopeSchema} from '../src/node-scope.mjs';
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { screenSpecPublicSchema } from "../src/schemas.mjs";
+import {catalogPageSchema} from '../src/catalog-read.mjs';
+import {readComponentMetadataSchema} from '../src/component-metadata.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 export function designSchemaText() {
@@ -17,10 +20,17 @@ return `${JSON.stringify(schema, null, 2)}\n`;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const path = join(root, "schemas", "design-spec.schema.json");
-  const expected = designSchemaText();
-  if (process.argv.includes("--check")) {
-    if (await readFile(path, "utf8") !== expected) throw new Error("JSON Schema устарела. Выполните npm run schema:export и добавьте обновлённую схему в изменения.");
-    console.log("JSON Schema соответствует исходникам.");
-  } else await writeFile(path, expected, "utf8");
+  const typed=(schema,name)=>`${JSON.stringify(zodToJsonSchema(schema,{name,target:'jsonSchema7'}),null,2)}\n`;
+  for(const [file,expected] of [
+    ['design-spec.schema.json',designSchemaText()],
+    ['catalog-page.schema.json',typed(catalogPageSchema,'ScanCatalogPage')],
+    ['node-scope.schema.json',typed(readNodeScopeSchema,'ReadNodeScope')],
+    ['component-metadata.schema.json',typed(readComponentMetadataSchema,'ReadComponentMetadata')],
+  ]){
+    const path=join(root,'schemas',file);
+    if(process.argv.includes('--check')){
+      if(await readFile(path,'utf8')!==expected)throw Error('JSON Schema устарела: '+file+'. Выполните npm run schema:export.');
+    }else await writeFile(path,expected,'utf8');
+  }
+  if(process.argv.includes('--check'))console.log('JSON Schema соответствует исходникам.');
 }

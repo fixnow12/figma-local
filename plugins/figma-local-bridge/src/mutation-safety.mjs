@@ -82,7 +82,7 @@ export function createMutationSafety(figma, requestFont = font => figma.loadFont
       const dimension = value[axis];
       if (dimension === undefined) continue;
       if (dimension === 0 && !(axis === "height" && ["LINE", "VECTOR"].includes(node.type))) throw new Error("Нулевая высота поддерживается только для LINE/VECTOR");
-      if (typeof node.resize !== "function") throw new Error("Узел не поддерживает изменение размера: " + node.name);
+      if (typeof node.resize !== "function" && !(node.type === "SECTION" && typeof node.resizeWithoutConstraints === "function")) throw new Error("Узел не поддерживает изменение размера: " + node.name);
       if (dimension === "fill" && (!node.parent || !node.parent.layoutMode || node.parent.layoutMode === "NONE")) {
         throw new Error("Fill требует родителя с Auto Layout: " + node.name);
       }
@@ -186,7 +186,7 @@ export function createMutationSafety(figma, requestFont = font => figma.loadFont
         }
         await attempt("paragraphRanges", () => applyParagraphRanges(figma, node, segments));
         if (sizes) {
-          if (node.width !== sizes.width || node.height !== sizes.height) await attempt("resize", () => node.resize(sizes.width, sizes.height));
+          if (node.width !== sizes.width || node.height !== sizes.height) await attempt("resize", () => node.type === "SECTION" ? node.resizeWithoutConstraints(sizes.width, sizes.height) : node.resize(sizes.width, sizes.height));
           for (const field of ["textAutoResize", "layoutSizingHorizontal", "layoutSizingVertical"]) {
             if (field in values && node[field] !== values[field]) await attempt(field, () => { node[field] = values[field]; });
           }

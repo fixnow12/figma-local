@@ -1,0 +1,24 @@
+{
+  "$ref": "#/definitions/ReadNodeScope",
+  "definitions": {
+    "ReadNodeScope": {
+      "type": "object",
+      "properties": {
+        "fileKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "nodeId": {
+          "$ref": "#/definitions/ReadNodeScope/properties/fileKey"
+        }
+      },
+      "required": [
+        "fileKey",
+        "nodeId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

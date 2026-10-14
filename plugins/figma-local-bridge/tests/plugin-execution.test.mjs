@@ -19,7 +19,9 @@ async function executionHandler(figma, globals = {}) {
     messages.push(message);
     if (message.type === "EXECUTE_CODE_RESULT") listeners.get(message.requestId)?.(message);
   } };
-  vm.runInNewContext(source.slice(start, end) + "\n};", {
+  const registryDeclaration=source.match(/^var catalogTraversalRegistry = .*;$/m)?.[0];
+  assert.ok(registryDeclaration);
+  vm.runInNewContext(registryDeclaration+"\n"+source.slice(start, end) + "\n};", {
     figma, setTimeout, clearTimeout, console: { log() {}, warn() {}, error() {} }, ...globals,
   });
   return {
@@ -166,15 +168,16 @@ for (const stage of ['load', 'list']) test(`зависание службы шр
   assert.equal(mock.figma.currentPage.children.length, 0, 'late font completion cannot resume the abandoned render');
 });
 
-test('холодный точный шрифт получает один безопасный повтор после подтверждения каталога', async () => {
+test('точный шрифт повторяется только после фактического завершения предыдущего native load', async () => {
   const mock = createFigmaMock();
   const requested = { family: 'Factor IO', style: 'Bold' };
   let exactLoads = 0;
   let listings = 0;
+  let release;
   mock.figma.loadFontAsync = async font => {
     if (font.family === requested.family && font.style === requested.style) {
       exactLoads++;
-      if (exactLoads === 1) return new Promise(() => {});
+      if (exactLoads === 1) return new Promise(resolve => { release = resolve; });
     }
   };
   mock.figma.listAvailableFontsAsync = async () => {
@@ -190,14 +193,20 @@ test('холодный точный шрифт получает один без�
   await handler.run('font-recovery', buildRenderCode({ spec, dryRun: true }), 1000);
 
   const response = handler.messages.find(message => message.requestId === 'font-recovery' && message.type === 'EXECUTE_CODE_RESULT');
-  assert.equal(response.success, true);
-  assert.equal(response.result.ready, true);
+  assert.equal(response.success, false);
+  assert.equal(response.code, 'FONT_SERVICE_TIMEOUT');
+  assert.equal(exactLoads, 1);
+  assert.equal(listings, 0);
+  assert.equal((await handler.probe()).fontService.pendingCount, 1);
+  release();
+  await new Promise(setImmediate);
+  await handler.run('font-settled', buildRenderCode({ spec, dryRun: true }), 1000);
+  assert.equal(handler.messages.find(message => message.requestId === 'font-settled' && message.type === 'EXECUTE_CODE_RESULT').result.ready, true);
   assert.equal(exactLoads, 2);
-  assert.equal(listings, 1);
   assert.equal(mock.figma.currentPage.children.length, 0);
 });
 
-test('повтор точного шрифта ограничен одной попыткой и сохраняет запрет неизменённого retry', async () => {
+test('незавершённый точный шрифт блокирует второй native dispatch после timeout', async () => {
   const mock = createFigmaMock();
   const requested = { family: 'Factor IO', style: 'Bold' };
   let exactLoads = 0;
@@ -224,8 +233,11 @@ test('повтор точного шрифта ограничен одной п�
   assert.equal(response.success, false);
   assert.equal(response.operationStatus, 'not_applied');
   assert.equal(response.retryPolicy, 'after_state_change');
-  assert.equal(exactLoads, 2);
-  assert.equal(listings, 1);
+  assert.equal(response.code, 'FONT_SERVICE_TIMEOUT');
+  await handler.run('font-pending', buildRenderCode({ spec, dryRun: true }), 1000);
+  assert.equal(handler.messages.find(message => message.requestId === 'font-pending' && message.type === 'EXECUTE_CODE_RESULT').code, 'FONT_SERVICE_PENDING');
+  assert.equal(exactLoads, 1);
+  assert.equal(listings, 0);
   assert.equal(mock.figma.currentPage.children.length, 0);
 });
 

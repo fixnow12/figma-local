@@ -5,7 +5,8 @@ import { randomUUID, randomBytes } from 'node:crypto';
 import { errorDetails } from './bridge-errors.mjs';
 import { FigmaBridge } from './bridge.mjs';
 import { installationDirectory, loadInstallation, identityFor } from './installation.mjs';
-import { brokerRevision, runtimeInfo } from './runtime-info.mjs';
+import { brokerRevision, runtimeInfo, pluginRevision } from './runtime-info.mjs';
+import {recoverComponentDryRunSchema,buildComponentDryRunReadbackCode} from './component-dry-run-recovery.mjs';
 
 export async function startBroker({ directory = installationDirectory(), port = 9233, idleMs = 60000, queueTimeoutMs = 5000,
   isRuntimeCurrent = () => brokerRevision() === runtimeInfo.brokerRevision } = {}) {
@@ -94,6 +95,44 @@ export async function startBroker({ directory = installationDirectory(), port = 
       void tail.then(() => { if (queues.get(fileKey) === tail) queues.delete(fileKey); });
     }
   }
+
+  async function recoverComponentDryRun(session,input) {
+    const reject=(code,message)=>{throw Object.assign(Error(message),{code,operationStatus:'not_applied',commandSent:false,operationId:input.operationId});};
+    const saved=journal.get(input.fileKey,input.operationId);
+    if(saved.recovery&&saved.settled&&saved.argsHash===input.argsHash)
+      return {operationStatus:'unknown',operation:saved,alreadyRecovered:true};
+    const record=journal.getRecoverableComponentDryRun(input);
+    if(restarting||!isRuntimeCurrent())reject('DRY_RUN_RECOVERY_RUNTIME_STALE','Broker не подтверждает текущую сборку');
+    return runForFile(session,input.fileKey,async()=>{
+      const socket=bridge.wsServer.clients.get(input.fileKey)?.ws;
+      const currentConnectionId=socket&&connectionId(socket);
+      const assertConnection=()=>{
+        const file=bridge.wsServer.clients.get(input.fileKey);
+        const liveSockets=new Set([...bridge.wsServer.socketKeys.keys(),...(bridge.wsServer.wss?.clients||[])]);
+        const oldAlive=[...liveSockets].some(ws=>connectionIds.get(ws)===record.connectionId&&ws.readyState!==3);
+        if(!file||file.ws!==socket||socket.readyState!==1||currentConnectionId===record.connectionId||oldAlive)
+          reject('DRY_RUN_RECOVERY_CONNECTION_REJECTED','Старое подключение не завершено или новое подключение изменилось');
+        if(file.fileInfo.pluginBuild!==pluginRevision()||!isRuntimeCurrent())
+          reject('DRY_RUN_RECOVERY_RUNTIME_STALE','Текущая сборка plugin/broker не подтверждена');
+      };
+      const assertIdle=value=>{
+        if(value?.fileKey!==input.fileKey||value.responsive!==true||value.busy!==false||
+          value.pendingExecutions!==0||value.activeOperation!==null)
+          reject('DRY_RUN_RECOVERY_NOT_IDLE','Plugin API не подтвердил свободное состояние');
+      };
+      assertConnection();
+      const before=await bridge.executionStatus(input.fileKey);assertConnection();assertIdle(before);
+      const read=await bridge.execute(buildComponentDryRunReadbackCode({fileKey:input.fileKey,key:record.operationInput.key}),
+        {timeout:10000,fileKey:input.fileKey,expectedSocket:socket,operation:{name:'recover_component_dry_run_readback',mutating:false}});
+      assertConnection();
+      if(read?.fileContext?.fileKey!==input.fileKey)reject('DRY_RUN_RECOVERY_PROOF_REJECTED','Read-back выполнен для другого файла');
+      const after=await bridge.executionStatus(input.fileKey);assertConnection();assertIdle(after);
+      const operation=journal.recoverComponentDryRun(input,{oldConnectionAbsent:true,currentConnectionId,before,after,readback:read.result});
+      uncertainFiles.delete(input.fileKey);
+      return {operationStatus:'unknown',operation};
+    });
+  }
+
   function release(session) {
     if (!session.closed || session.pending) return;
     sessions.delete(session);
@@ -116,6 +155,11 @@ export async function startBroker({ directory = installationDirectory(), port = 
             let result;
             if (message.method === 'status') result = maintenanceStatus();
             else if (message.method === 'operationStatus') result = {operationStatus:'read', operation: journal.get(message.args?.fileKey,message.args?.operationId)};
+            else if (message.method === 'recoverComponentDryRun') {
+              const input=recoverComponentDryRunSchema.parse(message.args);
+              fileOperation=true;activeOperations++;
+              result=await recoverComponentDryRun(session,input);
+            }
             else if (message.method === 'executionStatus') {
               const fileKey = message.args?.fileKey;
               if (typeof fileKey !== 'string' || !status().files.some(file => file.fileKey === fileKey)) throw new Error('Указанный файл не подключён');
@@ -134,6 +178,7 @@ export async function startBroker({ directory = installationDirectory(), port = 
               if (message.method === 'execute') {
                 if (typeof args.code !== 'string' || args.code.length > 8 * 1024 * 1024) throw new Error('Неверная команда');
                 const timeout = Math.min(60000, Math.max(1000, Number(args.timeout) || 30000));
+                if(args.operation?.name==='swap_nested_components')journal.assertNestedSwapReplayAllowed({fileKey,name:'swap_nested_components',args:args.operation.operationInput});
                 const pendingWrite = [...journal.records.values()].find(r=>r.fileKey===fileKey&&!r.settled);
                 if(pendingWrite && args.operation?.mutating !== false) throw Object.assign(Error('Предыдущий импорт ещё выполняется; прочитайте его журнал.'),{code:'OPERATION_IN_PROGRESS',operationStatus:'not_applied',commandSent:false,operationId:pendingWrite.operationId,stage:pendingWrite.stage});
                 result = await runForFile(session, fileKey, async () => {
@@ -142,11 +187,12 @@ export async function startBroker({ directory = installationDirectory(), port = 
                   let operation = args.operation;
                   const pendingImport = [...journal.records.values()].find(r=>r.fileKey===fileKey&&!r.settled);
                   if(pendingImport && operation?.mutating !== false) throw Object.assign(Error('Предыдущий импорт ещё не завершён; прочитайте журнал операции.'), {code:'OPERATION_IN_PROGRESS',operationStatus:'not_applied',commandSent:false,operationId:pendingImport.operationId,stage:pendingImport.stage});
-                  if(['import_variables','use_component'].includes(operation?.name)) {
+                  journal.assertNativeImportReplayAllowed({fileKey,name:operation?.name,args:operation?.operationInput,mutating:operation?.mutating,componentImportKeys:operation?.componentImportKeys});
+                  if(['import_variables','use_component','swap_nested_components'].includes(operation?.name)) {
                     if(!socket) throw Error('Файл отключён');
                     const input = operation.name==='import_variables'
                       ? operation.importInput
-                      : {fileKey,name:operation.name,args:{...operation.operationInput,fileKey}};
+                      : {fileKey,name:operation.name,...(operation.name==='swap_nested_components'?{operationId:operation.operationInput.operationId}:{}),args:{...operation.operationInput,fileKey}};
                     if(input?.fileKey !== fileKey || (operation.name==='import_variables'&&!Array.isArray(input.variables))) throw Error('Неверные аргументы операции');
                     const resumeToken = randomBytes(32).toString('hex');
                     record = journal.begin(input,connectionId(socket),resumeToken);

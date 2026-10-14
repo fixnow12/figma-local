@@ -1,3 +1,6 @@
+import { captureCatalogExampleNode } from './catalog-example-data.mjs';
+import { normalizeComponentVariantGroups } from './component-definitions.mjs';
+import { createCatalogTraversal } from './catalog-traversal.mjs';
 import { createCatalogReadAccess } from './catalog-read-access.mjs';
 import { applyExactParagraphRanges } from "./text-paragraphs.mjs";
 import { createMutationSafety } from "./mutation-safety.mjs";
@@ -89,7 +92,7 @@ export function createCatalogDiagnostics() {
 
 export function compileOperation(operation, input, { mutationSafety = false, readOnly = false, catalogDiagnostics = false } = {}) {
   const json = JSON.stringify(input).replaceAll("</", "<\\/");
-  return `const fontService = (${createFontService.toString()})();
+  return `const fontService = (${createFontService.toString()})(typeof executionControl === "undefined" ? undefined : executionControl);
   const check = () => {
     if (typeof executionControl !== "undefined" && executionControl.cancelled) {
       const error = new Error("Время операции истекло");
@@ -98,16 +101,21 @@ export function compileOperation(operation, input, { mutationSafety = false, rea
     }
   };
   const loadFont = async font => {
-    await fontService.wait(figma.loadFontAsync(font), font, "загрузка исходного шрифта");
+    await fontService.load(figma, font, "загрузка исходного шрифта");
     check();
   };
   const applyExactParagraphRanges = ${applyExactParagraphRanges.toString()};
   const safety = ${mutationSafety ? `(${createMutationSafety.toString()})(figma, loadFont)` : "null"};
   const readService = (${createReadService.toString()})(figma, check);
   const access = (${createSceneAccess.toString()})(figma, check, loadFont, readService);
-  ${catalogDiagnostics ? `const catalogDiagnostics = (${createCatalogDiagnostics.toString()})();
+  ${catalogDiagnostics ? `const normalizeComponentVariantGroups = ${normalizeComponentVariantGroups.toString()};
+  const catalogDiagnostics = (${createCatalogDiagnostics.toString()})();
   access.diagnostics = catalogDiagnostics;
   access.catalog = (${createCatalogReadAccess.toString()})(figma, access);
+  access.catalog.variantGroups = normalizeComponentVariantGroups;
+  const captureExampleNode = ${captureCatalogExampleNode.toString()};
+  access.catalog.exampleNode = (figma,node,children,childIndex) => captureExampleNode(figma,node,children,childIndex);
+  access.catalog.traversal = (${createCatalogTraversal.toString()})(figma, access, typeof executionControl !== "undefined" ? executionControl.catalogTraversal : undefined, access.catalog.exampleNode);
   if (typeof executionControl !== "undefined") executionControl.catalogDiagnosticsSnapshot = () => catalogDiagnostics.snapshot();` : ''}
   try {
     const result = await (${operation.toString()})(figma, ${json}, access, safety);

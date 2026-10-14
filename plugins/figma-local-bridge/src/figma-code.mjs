@@ -138,8 +138,9 @@ function applyDimension(node, axis, value) {
   }
   if (field in node) setIfChanged(node, field, "FIXED");
   if (node[axis] !== value) {
-    if (axis === "width") node.resize(value, node.height);
-    else node.resize(node.width, value);
+    const resize = node.type === "SECTION" ? node.resizeWithoutConstraints.bind(node) : node.resize.bind(node);
+    if (axis === "width") resize(value, node.height);
+    else resize(node.width, value);
   }
 }
 
@@ -153,38 +154,41 @@ function sizeSvg(node, item) {
 
 const fontLoads = new Map();
 let availableFonts;
-const fontService = (${createFontService.toString()})();
-async function waitForFontService(promise, font, stage) {
-  const result = await fontService.wait(promise, font, stage);
-  checkOperation();
-  return result;
-}
-function fontLoadFailure(font, detail, cause) {
-  return new Error("Недоступен шрифт для загрузки «" + font.family + " / " + font.style + "». " + detail +
+const fontService = (${createFontService.toString()})(typeof executionControl === "undefined" ? undefined : executionControl);
+function fontLoadFailure(font, detail, cause, code = "FONT_LOAD_FAILED") {
+  const error = new Error("Недоступен шрифт для загрузки «" + font.family + " / " + font.style + "». " + detail +
     " Причина Figma: " + String(cause && cause.message || cause).slice(0, 500) +
     ". Сохраните исходное семейство и начертание. Не заменяйте шрифт на Inter, Regular или другой шрифт и не повторяйте запись с заменой без явного согласия пользователя. " +
     "Сообщите пользователю имя шрифта и причину; предложите восстановить его доступность в Figma либо согласовать конкретную замену.");
+  error.code = code;
+  error.operationStatus = "not_applied";
+  error.retryPolicy = "after_state_change";
+  error.blockers = [{ type: "font", family: font.family, style: font.style, stage: "загрузка", classification: code, reason: String(cause && cause.message || cause).slice(0, 500) }];
+  error.nextStep = (code === "FONT_NOT_AVAILABLE"
+    ? "В списке Figma нет точного семейства/начертания. Восстановите его доступность в Figma."
+    : "Сохраните исходную ошибку Figma и проверьте доступность точного семейства/начертания; отсутствие шрифта не подтверждено.") + " Не подменяйте шрифт; используйте штатное восстановление RUN в пределах бюджета. Не повторяйте вызовы без изменения причины.";
+  return error;
 }
 async function loadExactFont(font) {
   const key = JSON.stringify(font);
   if (!fontLoads.has(key)) fontLoads.set(key, (async () => {
     try {
-      await waitForFontService(figma.loadFontAsync(font), font, "загрузка");
+      await fontService.load(figma, font);
       return font;
     } catch (error) {
-      const initialTimeout = error.code === "FONT_SERVICE_TIMEOUT";
+      if (["FONT_SERVICE_TIMEOUT", "FONT_SERVICE_PENDING"].includes(error.code)) throw error;
       checkOperation();
       // Accept spelling differences only, never substitute another weight/family.
       if (typeof figma.listAvailableFontsAsync !== "function") {
-        if (initialTimeout) throw error;
         throw fontLoadFailure(font, "Проверка списка доступных шрифтов не поддерживается; отсутствие шрифта не подтверждено.", error);
       }
       let fonts;
       try {
-        availableFonts ||= figma.listAvailableFontsAsync();
-        fonts = await waitForFontService(availableFonts, font, "список доступных шрифтов");
+        availableFonts ||= fontService.list(figma, font);
+        fonts = await availableFonts;
+        checkOperation();
       } catch (listingError) {
-        if (listingError.code === "FONT_SERVICE_TIMEOUT") throw listingError;
+        if (["FONT_SERVICE_TIMEOUT", "FONT_SERVICE_PENDING"].includes(listingError.code)) throw listingError;
         checkOperation();
         throw fontLoadFailure(font, "Не удалось проверить список шрифтов: " + String(listingError.message || listingError).slice(0, 500) + "; отсутствие шрифта не подтверждено.", error);
       }
@@ -192,23 +196,20 @@ async function loadExactFont(font) {
       const matches = fonts.map(item => item.fontName).filter(item =>
         item.family === font.family && normalize(item.style) === normalize(font.style));
       if (matches.length === 1) {
-        if (!initialTimeout && matches[0].style === font.style) {
+        if (matches[0].style === font.style) {
           throw fontLoadFailure(font, "Шрифт есть в списке доступных Figma, но загрузить его не удалось.", error);
         }
         try {
-          const stage = initialTimeout ? "повторная загрузка после подтверждения каталога" : "загрузка эквивалентного начертания";
-          await waitForFontService(figma.loadFontAsync(matches[0]), matches[0], stage);
+          await fontService.load(figma, matches[0], "загрузка эквивалентного начертания");
         } catch (aliasError) {
-          if (aliasError.code === "FONT_SERVICE_TIMEOUT") throw aliasError;
+          if (["FONT_SERVICE_TIMEOUT", "FONT_SERVICE_PENDING"].includes(aliasError.code)) throw aliasError;
           checkOperation();
-          const detail = initialTimeout
-            ? "Шрифт подтверждён каталогом, но единственная повторная загрузка также не удалась."
-            : "Найдено эквивалентное начертание «" + matches[0].style + "», но его загрузка также не удалась.";
+          const detail = "Найдено эквивалентное начертание «" + matches[0].style + "», но его загрузка также не удалась.";
           throw fontLoadFailure(font, detail, aliasError);
         }
         return matches[0];
       }
-      throw fontLoadFailure(font, matches.length ? "В списке Figma найдено несколько неоднозначных совпадений начертания." : "В списке доступных Figma нет совпадающего семейства и начертания.", error);
+      throw fontLoadFailure(font, matches.length ? "В списке Figma найдено несколько неоднозначных совпадений начертания." : "В списке доступных Figma нет совпадающего семейства и начертания.", error, matches.length ? "FONT_STYLE_AMBIGUOUS" : "FONT_NOT_AVAILABLE");
     }
   })());
   return fontLoads.get(key);
@@ -280,7 +281,11 @@ async function applyText(node, item, creating = false, preflightOnly = false) {
 
   if (preflightOnly) return;
   // All fonts and ranges are validated before changing the text.
-  if (item.textStyleId !== undefined) await node.setTextStyleIdAsync(item.textStyleId);
+  checkOperation();
+  if (item.textStyleId !== undefined) {
+    await node.setTextStyleIdAsync(item.textStyleId);
+    checkOperation();
+  }
   if ((creating && !item.textStyleId) || explicitFont) {
     if (fonts.every(font => font.family === fonts[0].family && font.style === fonts[0].style)) {
       if (!sameValue(node.fontName, fonts[0])) node.fontName = fonts[0];
@@ -301,7 +306,10 @@ async function applyText(node, item, creating = false, preflightOnly = false) {
   if (item.textAlignVertical !== undefined) node.textAlignVertical = item.textAlignVertical;
   if (item.textAutoResize !== undefined) node.textAutoResize = item.textAutoResize;
   for (const { run, font } of preparedRuns) {
-    if (run.textStyleId !== undefined) await node.setRangeTextStyleIdAsync(run.start, run.end, run.textStyleId);
+    if (run.textStyleId !== undefined) {
+      await node.setRangeTextStyleIdAsync(run.start, run.end, run.textStyleId);
+      checkOperation();
+    }
     if (font && !sameValue(node.getRangeFontName(run.start, run.end), font)) node.setRangeFontName(run.start, run.end, font);
     for (const field of textFields) if (run[field] !== undefined && !["paragraphSpacing", "paragraphIndent"].includes(field)) {
       const method = "setRange" + field[0].toUpperCase() + field.slice(1);
@@ -309,7 +317,11 @@ async function applyText(node, item, creating = false, preflightOnly = false) {
       if (!sameValue(node["getRange" + field[0].toUpperCase() + field.slice(1)](run.start, run.end), value)) node[method](run.start, run.end, value);
     }
   }
-  await applyExactParagraphRanges(figma, node, runs);
+  await applyExactParagraphRanges(figma, node, runs, {
+    loadFont: font => fontService.load(figma, font, "загрузка шрифта абзаца"),
+    check: checkOperation,
+  });
+  checkOperation();
 }
 
 async function applyEffects(node, item) {
@@ -542,6 +554,12 @@ try {
   root.name = spec.name;
   root.setPluginData(DATA_KEY, spec.key);
   root.resize(spec.width, spec.height);
+  // The structural wrapper must preserve transparent root corners.
+  createdSection.fills = [];
+  createdSection.strokes = [];
+  createdSection.resizeWithoutConstraints(spec.width, spec.height);
+  root.x = 0;
+  root.y = 0;
   applyLayout(root, spec.layout);
   applyVisual(root, spec);
   await applyEffects(root, spec);
@@ -549,6 +567,12 @@ try {
 
   for (const child of spec.children || []) await build(child, root);
   root.resize(spec.width, spec.height);
+  // The structural wrapper must preserve transparent root corners.
+  createdSection.fills = [];
+  createdSection.strokes = [];
+  createdSection.resizeWithoutConstraints(spec.width, spec.height);
+  root.x = 0;
+  root.y = 0;
 
   // Internal reconstruction finalization belongs to the same rollback boundary.
   ${finalizeCode}
@@ -600,7 +624,7 @@ try {
 
 export function buildPatchCode({ patches, ignoreMissing, screenshotKey }) {
   return `${helpers}
-const safety = (${createMutationSafety.toString()})(figma, font => waitForFontService(figma.loadFontAsync(font), font, "загрузка исходного шрифта"));
+const safety = (${createMutationSafety.toString()})(figma, font => fontService.load(figma, font, "загрузка исходного шрифта"));
 const patches = ${literal(patches)};
 const ignoreMissing = ${literal(ignoreMissing)};
 const screenshotKey = ${literal(screenshotKey)};
@@ -862,6 +886,7 @@ const unread = [];
 const assets = [];
 const fidelityWarnings = [];
 const instanceReads = [];
+const variableModeReads = new Map();
 const siblingTopology = new Map();
 
 function inspect(node, level) {
@@ -940,6 +965,16 @@ function inspect(node, level) {
   if (node.type === "COMPONENT") item.variantProperties = node.variantProperties;
   if (node.type === "COMPONENT_SET") item.variantGroupProperties = node.variantGroupProperties;
   if (detail === "full") {
+    if (node.type === "VECTOR") item.vectorNetwork = node.vectorNetwork;
+    if ("resolvedVariableModes" in node) {
+      const modes = node.resolvedVariableModes;
+      if (!modes || typeof modes !== "object" || Array.isArray(modes) || Object.entries(modes).some(([id, modeId]) => !id || typeof modeId !== "string" || !modeId)) throw new Error("Invalid resolved variable modes: " + node.id);
+      item.resolvedVariableModes = { ...modes };
+      for (const [id, modeId] of Object.entries(item.resolvedVariableModes)) {
+        if (!variableModeReads.has(id)) variableModeReads.set(id, new Set());
+        variableModeReads.get(id).add(modeId);
+      }
+    }
     if (node.type === "INSTANCE") {
       instanceReads.push({ node, item });
       item.overrides = node.overrides;
@@ -947,7 +982,7 @@ function inspect(node, level) {
     if ("componentPropertyReferences" in node) item.componentPropertyReferences = node.componentPropertyReferences;
     const serializable = (value) => value === figma.mixed ? "MIXED" : value;
     item.parentId = node.parent?.id || null;
-    for (const field of ["opacity", "fills", "strokes", "strokeWeight", "cornerRadius", "clipsContent", "effects", "fillStyleId", "strokeStyleId", "effectStyleId", "boundVariables", "explicitVariableModes", "layoutSizingHorizontal", "layoutSizingVertical", "layoutPositioning", "minWidth", "maxWidth", "minHeight", "maxHeight", "absoluteBoundingBox", "relativeTransform", "rotation", "constraints", "topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius", "cornerSmoothing", "strokeAlign", "strokeTopWeight", "strokeBottomWeight", "strokeLeftWeight", "strokeRightWeight", "dashPattern", "blendMode", "isMask", "maskType", "textAlignVertical", "paragraphSpacing", "paragraphIndent", "vectorPaths", "booleanOperation", "pointCount", "strokeCap", "strokeJoin", "scaleFactor"]) {
+    for (const field of ["opacity", "fills", "strokes", "strokeWeight", "cornerRadius", "clipsContent", "effects", "fillStyleId", "strokeStyleId", "effectStyleId", "gridStyleId", "layoutGrids", "boundVariables", "explicitVariableModes", "layoutSizingHorizontal", "layoutSizingVertical", "primaryAxisSizingMode", "counterAxisSizingMode", "constrainProportions", "layoutPositioning", "layoutGrow", "layoutAlign", "minWidth", "maxWidth", "minHeight", "maxHeight", "absoluteBoundingBox", "relativeTransform", "rotation", "constraints", "topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius", "cornerSmoothing", "strokeAlign", "strokeTopWeight", "strokeBottomWeight", "strokeLeftWeight", "strokeRightWeight", "dashPattern", "blendMode", "isMask", "maskType", "textAlignVertical", "paragraphSpacing", "paragraphIndent", "vectorPaths", "booleanOperation", "pointCount", "strokeCap", "strokeJoin", "scaleFactor"]) {
       if (field in node) item[field] = serializable(node[field]);
     }
     if (node.isMask && ["BOOLEAN_OPERATION", "STAR", "POLYGON"].includes(node.type)) item.fillGeometry = node.fillGeometry;
@@ -1009,6 +1044,15 @@ await Promise.all(instanceReads.map(async ({ node, item }) => {
     item.mainComponent = { status: "unavailable", message: String(error.message || error), ...(error.code ? { code: error.code } : {}) };
   }
 }));
+// Source modes may be inherited even when explicitVariableModes is empty.
+// Read only the collections referenced by the bounded visited subtree. An
+// unavailable collection or mode must fail instead of returning complete proof.
+const variableCollections = await Promise.all([...variableModeReads].map(async ([id, usedModes]) => {
+  const collection = await readService.wait(figma.variables.getVariableCollectionByIdAsync(id), "variable collection " + id);
+  const modes = collection?.modes;
+  if (collection?.id !== id || !/^[a-f0-9]{40}$/.test(collection?.key || "") || !Array.isArray(modes) || !modes.length || modes.some(mode => !mode || typeof mode.modeId !== "string" || !mode.modeId || typeof mode.name !== "string" || !mode.name) || new Set(modes.map(mode => mode.modeId)).size !== modes.length || !modes.some(mode => mode.modeId === collection.defaultModeId) || [...usedModes].some(modeId => !modes.some(mode => mode.modeId === modeId))) throw new Error("Resolved variable mode/collection unavailable or invalid: " + id);
+  return { id: collection.id, key: collection.key, ...(typeof collection.name === "string" ? { name: collection.name } : {}), defaultModeId: collection.defaultModeId, modes: modes.map(({ modeId, name }) => ({ modeId, name })) };
+}));
 return {
   page: { id: operationPage.id, name: operationPage.name },
   selection,
@@ -1017,6 +1061,7 @@ return {
   truncated,
   coverage: { complete: !truncated && !roots.some(node => !node), unread, assetNodes: assets },
   fidelityWarnings,
+  ...(variableCollections.length ? { variableCollections } : {}),
 };`;
 }
 
@@ -1028,6 +1073,28 @@ let component = null;
 if (input.sourceKey || input.sourceId) {
   component = input.sourceId ? await figma.getNodeByIdAsync(input.sourceId) : findByKey(input.sourceKey);
   if (!component) throw new Error("Локальный компонент не найден: " + (input.sourceKey || input.sourceId));
+} else if (input.librarySetKey !== undefined) {
+  // The set route must never fall back to importing the child directly.
+  if (typeof input.librarySetKey !== "string" || !input.librarySetKey ||
+      typeof input.libraryKey !== "string" || !input.libraryKey ||
+      !input.variant || !Object.keys(input.variant).length ||
+      Object.entries(input.variant).some(([key, value]) => !key || typeof value !== "string" || !value)) {
+    throw new Error("Component-set import requires exact set/child keys and a non-empty selector");
+  }
+  const componentSet = await figma.importComponentSetByKeyAsync(input.librarySetKey);
+  if (typeof executionControl !== "undefined" && executionControl.report) {
+    executionControl.report({ stage: "component-import", libraryKey: input.libraryKey, librarySetKey: input.librarySetKey, id: componentSet?.id });
+  }
+  checkOperation();
+  if (componentSet?.type !== "COMPONENT_SET" || componentSet.key !== input.librarySetKey || !Array.isArray(componentSet.children)) {
+    throw new Error("Imported component set does not match the exact librarySetKey");
+  }
+  const matches = componentSet.children.filter(candidate => candidate.type === "COMPONENT" &&
+    Object.entries(input.variant).every(([key, value]) =>
+      candidate.variantProperties && Object.hasOwn(candidate.variantProperties, key) && candidate.variantProperties[key] === value));
+  if (matches.length !== 1) throw new Error("Component-set selector must match exactly one direct COMPONENT: " + JSON.stringify(input.variant));
+  component = matches[0];
+  if (component.key !== input.libraryKey) throw new Error("Selected component does not match the exact child libraryKey");
 } else {
   component = await figma.importComponentByKeyAsync(input.libraryKey);
   if (typeof executionControl !== "undefined" && executionControl.report) {
@@ -1039,10 +1106,11 @@ if (input.sourceKey || input.sourceId) {
 if (component?.type === "COMPONENT_SET") {
   const candidates = component.children.filter((node) => node.type === "COMPONENT");
   if (input.variant && Object.keys(input.variant).length) {
-    component = candidates.find((candidate) =>
-      Object.entries(input.variant).every(([key, value]) => candidate.variantProperties?.[key] === value)
+    const matches = candidates.filter((candidate) =>
+      Object.entries(input.variant).every(([key, value]) => candidate.variantProperties && Object.hasOwn(candidate.variantProperties, key) && candidate.variantProperties[key] === value)
     );
-    if (!component) throw new Error("Вариант component set не найден: " + JSON.stringify(input.variant));
+    if (matches.length !== 1) throw new Error("Component set variant must match exactly one component: " + JSON.stringify(input.variant));
+    component = matches[0];
   } else {
     component = candidates[0] || null;
   }
@@ -1062,6 +1130,7 @@ if (input.dryRun) {
     sourceType: component.type,
     sourceName: component.name,
     libraryKey: input.libraryKey || component.key,
+    ...(input.librarySetKey !== undefined ? { librarySetKey: input.librarySetKey } : {}),
     variantProperties: component.variantProperties,
     componentPropertyDefinitions: (component.parent?.type === "COMPONENT_SET" ? component.parent : component).componentPropertyDefinitions,
   };

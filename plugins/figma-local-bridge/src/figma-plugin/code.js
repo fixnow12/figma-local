@@ -7,6 +7,8 @@
 // Plugin version — sent in FILE_INFO for compatibility checks. It follows the
 // same release number as package.json, .codex-plugin/plugin.json and the MCP server.
 var PLUGIN_VERSION = '0.3.0';
+// Catalog snapshots never mutate canvas or clientStorage. Document events invalidate them.
+var catalogTraversalRegistry = {ready:false,sessionId:Date.now().toString(36)+'-'+Math.random().toString(36).slice(2),generation:0,sessions:new Map(),invalidated:new Map()};
 
 console.log('🌉 [Desktop Bridge] Plugin loaded (v' + PLUGIN_VERSION + ')');
 
@@ -469,6 +471,8 @@ async function resolveSlotNode(params) {
 // Serialize generated operations across all connected local MCP clients.
 // A timeout reports uncertainty, but must not release the lock while code is still running.
 var executeCodeQueue = Promise.resolve();
+// Native font requests outlive their bounded await; track them outside the command queue.
+var fontServiceRegistry = { pending: new Map(), sequence: 0, recent: [] };
 var pendingExecutions = 0;
 var activeExecution = null;
 figma.ui.onmessage = async (msg) => {
@@ -477,6 +481,7 @@ figma.ui.onmessage = async (msg) => {
   if (msg.type === 'GET_EXECUTION_STATUS') {
     figma.ui.postMessage({ type: 'GET_EXECUTION_STATUS_RESULT', requestId: msg.requestId,
       success: true, busy: pendingExecutions > 0, pendingExecutions: pendingExecutions,
+      fontService: fontServiceRegistry.snapshot ? fontServiceRegistry.snapshot() : { pendingCount: 0, pending: [], recent: [] },
       activeOperation: activeExecution ? { name: activeExecution.name, mutating: activeExecution.mutating,
         elapsedMs: Math.max(0, Date.now() - activeExecution.startedAt), timedOut: activeExecution.timedOut } : null });
     return;
@@ -497,7 +502,7 @@ figma.ui.onmessage = async (msg) => {
       mutating: !msg.operation || msg.operation.mutating !== false, startedAt: Date.now(), timedOut: false };
     var journalSequence = 0;
     var journalMeta = msg.operation && msg.operation.journal;
-    var executionControl = { cancelled: false, report: function(event) {
+    var executionControl = { cancelled: false, fontService: fontServiceRegistry, catalogTraversal:catalogTraversalRegistry, report: function(event) {
       if(!journalMeta)return;
       figma.ui.postMessage({type:'OPERATION_JOURNAL_EVENT',data:Object.assign({},event,journalMeta,{sequence:++journalSequence})});
     } };
@@ -639,6 +644,7 @@ figma.ui.onmessage = async (msg) => {
         retryPolicy: error.retryPolicy,
         fileKey: error.fileKey,
         blockers: error.blockers,
+        catalogSource: error.catalogSource,
         catalogDiagnostics: error.catalogDiagnostics || (executionControl.catalogDiagnosticsSnapshot && executionControl.catalogDiagnosticsSnapshot())
       });
     } finally {
@@ -7266,6 +7272,154 @@ figma.ui.onmessage = async (msg) => {
 // ============================================================================
 figma.loadAllPagesAsync().then(function() {
   figma.on('documentchange', function(event) {
+    // Retain global epoch semantics: only proved independence from ALL snapshots
+    // can preserve it. Cross-page component ancestry/dependencies fail closed.
+    var catalogIndependent = false;
+    var catalogObservationTargets = [];
+    var catalogDiagnostic = {at:Date.now(),reason:"not-applicable",activePages:[],activePageCount:0,changes:[],closureActions:0};
+    try {
+      var localProperties = ['name','description','x','y','width','height','rotation','visible','opacity','characters'];
+      var localTypes = ['FRAME','GROUP','SECTION','TEXT','RECTANGLE','ELLIPSE','LINE','VECTOR','POLYGON','STAR','BOOLEAN_OPERATION'];
+      var changes = event.documentChanges, activePages = new Set();
+      catalogTraversalRegistry.sessions.forEach(function(snapshot) {
+        if (!snapshot.page || typeof snapshot.page.id !== 'string') throw new Error('Unknown snapshot scope');
+        activePages.add(snapshot.page.id);
+      });
+      catalogDiagnostic.activePageCount=activePages.size;
+      catalogDiagnostic.activePages=Array.from(activePages).slice(0,16);
+      function recordedCatalogNode(id) {
+        var recorded = false;
+        catalogTraversalRegistry.sessions.forEach(function(snapshot) {
+          if (snapshot.byId && snapshot.byId.has(id)) recorded = true;
+        });
+        return recorded;
+      }
+      var closureActions = 0, closureStart = Date.now();
+      function catalogCondition(condition) { catalogDiagnostic.condition = condition; }
+      function catalogReject(message) {
+        catalogDiagnostic.failureCondition = catalogDiagnostic.condition;
+        catalogDiagnostic.failureKind = "predicate";
+        throw new Error(message);
+      }
+      function closureStep() {
+        catalogCondition("closure-action-limit");
+        if (++closureActions > 512) catalogReject('Incomplete dependency closure');
+        catalogCondition("closure-time-limit");
+        if (Date.now() - closureStart > 20) catalogReject('Incomplete dependency closure');
+      }
+      catalogIndependent = activePages.size > 0 && Array.isArray(changes) && changes.length > 0 && changes.length <= 64;
+      if(!catalogIndependent)catalogDiagnostic.reason=activePages.size===0?"no-active-snapshot":"change-count-or-shape";
+      for (var c = 0; catalogIndependent && c < changes.length; c++) {
+        catalogDiagnostic.reason="change-access";
+        catalogCondition("change-node-read");
+        var change = changes[c], changed = change.node;
+        var changeDiagnostic={hasNode:!!changed,ancestry:[]};
+        if(c<16){catalogDiagnostic.changes.push(changeDiagnostic);catalogObservationTargets.push({node:changed,diagnostic:changeDiagnostic});}
+        catalogDiagnostic.reason=!changed?"missing-node":"unsupported-change";
+        try{changeDiagnostic.nodeType=changed&&typeof changed.type==="string"?changed.type.slice(0,80):null;}catch(diagnosticReadError){}
+        catalogCondition("change-supported-local-property");
+        if (change.type !== 'PROPERTY_CHANGE' || !changed || changed.removed || change.id !== changed.id ||
+            !Array.isArray(change.properties) || !change.properties.length || change.properties.length > localProperties.length ||
+            !change.properties.every(function(property) { return localProperties.indexOf(property) !== -1; })) {
+          catalogIndependent = false; break;
+        }
+        catalogDiagnostic.reason="ancestry";
+        var ancestor = changed, chain = new Set();
+        while (ancestor) {
+          catalogCondition("ancestry-page-type");
+          if (ancestor.type === 'PAGE') break;
+          closureStep();
+          catalogCondition("ancestry-id-unavailable");
+          if (typeof ancestor.id !== 'string') catalogReject('Unknown dependency ancestry');
+          catalogCondition("ancestry-cycle");
+          if (chain.has(ancestor.id)) catalogReject('Unknown dependency ancestry');
+          catalogCondition("ancestry-recorded-node");
+          if (recordedCatalogNode(ancestor.id)) catalogReject('Unknown dependency ancestry');
+          catalogCondition("ancestry-unsupported-type");
+          if (localTypes.indexOf(ancestor.type) === -1) catalogReject('Unknown dependency ancestry');
+          catalogCondition("ancestry-removed-node");
+          if (ancestor.removed) catalogReject('Unknown dependency ancestry');
+          catalogCondition("ancestry-prefix-read");
+          if(changeDiagnostic.ancestry.length<8)changeDiagnostic.ancestry.push({id:ancestor.id.slice(0,100),type:ancestor.type.slice(0,80)});
+          chain.add(ancestor.id);catalogCondition("ancestry-parent-read");ancestor = ancestor.parent;
+        }
+        catalogCondition("page-identity-read");
+        if(ancestor)changeDiagnostic.pageId=typeof ancestor.id==="string"?ancestor.id.slice(0,100):null;
+        catalogDiagnostic.reason=ancestor&&activePages.has(ancestor.id)?"same-page":"unresolved-page";
+        catalogCondition("page-unresolved");
+        if (!ancestor) { catalogDiagnostic.failureCondition=catalogDiagnostic.condition;catalogDiagnostic.failureKind="predicate";catalogIndependent=false;break; }
+        catalogCondition("page-active-snapshot");
+        if (activePages.has(ancestor.id)) { catalogDiagnostic.failureCondition=catalogDiagnostic.condition;catalogDiagnostic.failureKind="predicate";catalogIndependent=false;break; }
+        catalogCondition("page-not-document-child");
+        if (figma.root.children.indexOf(ancestor) === -1) { catalogDiagnostic.failureCondition=catalogDiagnostic.condition;catalogDiagnostic.failureKind="predicate";catalogIndependent=false;break; }
+        // Prove complete affected subtree contains no component referent or INSTANCE.
+        catalogDiagnostic.reason="subtree";
+        var closure = [changed], seen = new Set();
+        while (closure.length) {
+          closureStep();var node = closure.pop();
+          catalogCondition("subtree-id-unavailable");
+          if (typeof node.id !== 'string') catalogReject('Possible cross-page dependency');
+          catalogCondition("subtree-cycle");
+          if (seen.has(node.id)) catalogReject('Possible cross-page dependency');
+          catalogCondition("subtree-recorded-node");
+          if (recordedCatalogNode(node.id)) catalogReject('Possible cross-page dependency');
+          catalogCondition("subtree-unsupported-type");
+          if (localTypes.indexOf(node.type) === -1) catalogReject('Possible cross-page dependency');
+          catalogCondition("subtree-removed-node");
+          if (node.removed) catalogReject('Possible cross-page dependency');
+          catalogCondition("subtree-children-read");
+          seen.add(node.id);
+          var children = 'children' in node ? node.children : [];
+          catalogCondition("subtree-children-shape");
+          if (!Array.isArray(children)) catalogReject('Incomplete dependency subtree');
+          catalogCondition("subtree-action-capacity");
+          if (children.length > 512 - closureActions) catalogReject('Incomplete dependency subtree');
+          for (var k = 0; k < children.length; k++) {
+            catalogCondition("subtree-parent-mismatch");
+            if (children[k].parent !== node) catalogReject('Changed dependency parent');
+            closure.push(children[k]);
+          }
+        }
+      }
+    } catch (catalogClosureError) { if(!catalogDiagnostic.failureCondition){catalogDiagnostic.failureCondition=catalogDiagnostic.condition||catalogDiagnostic.reason;catalogDiagnostic.failureKind="evaluation-threw";}catalogIndependent = false;catalogDiagnostic.exceptionStage=catalogDiagnostic.reason;catalogDiagnostic.reason="closure-exception";try{catalogDiagnostic.exception=String(catalogClosureError.message||catalogClosureError).slice(0,160);}catch(diagnosticError){} }
+    catalogDiagnostic.closureActions=typeof closureActions==="number"?closureActions:0;
+    if(catalogIndependent)catalogDiagnostic.reason="proved-independent";
+    try{var catalogLoad=catalogTraversalRegistry.pageLoad;if(catalogLoad)catalogDiagnostic.pageLoad={pageId:catalogLoad.pageId,startAt:catalogLoad.startAt,endAt:catalogLoad.endAt};}catch(diagnosticLoadError){}
+    catalogTraversalRegistry.lastDocumentChange=catalogDiagnostic;
+    if (!catalogIndependent) {
+      var catalogInvalidation = {at:Date.now(),previousGeneration:catalogTraversalRegistry.generation,currentGeneration:catalogTraversalRegistry.generation+1,changeCount:event.documentChanges.length,diagnostic:catalogDiagnostic,changes:event.documentChanges.slice(0,16).map(function(change){return {type:String(change.type).slice(0,80),id:typeof change.id==='string'?change.id.slice(0,100):null,properties:Array.isArray(change.properties)?change.properties.slice(0,12).map(function(p){return String(p).slice(0,80);}):[]};})};
+      catalogTraversalRegistry.sessions.forEach(function(snapshot,id) {
+        catalogTraversalRegistry.invalidated.set(id,{identity:snapshot.identity,generation:snapshot.generation,event:catalogInvalidation});
+      });
+      while(catalogTraversalRegistry.invalidated.size>64) catalogTraversalRegistry.invalidated.delete(catalogTraversalRegistry.invalidated.keys().next().value);
+      catalogTraversalRegistry.generation++;
+      catalogTraversalRegistry.sessions.clear();
+    }
+    // Observational only: classification and generation above are final.
+    // No ID resolution or page loads. Eight nodes per retained change, with
+    // a shared 5ms admission budget; synchronous getters cannot be preempted.
+    try {
+      var observationStart = Date.now();
+      for (var oi = 0; oi < catalogObservationTargets.length; oi++) {
+        var target = catalogObservationTargets[oi];
+        var observation = {nodes:[],status:"unresolved",observationalOnly:true};
+        target.diagnostic.ancestryObservation = observation;
+        var observed = target.node, observedNodes = new Set();
+        while (observed) {
+          if (Date.now() - observationStart > 5) { observation.status="time-limit";break; }
+          if (observation.nodes.length >= 8) { observation.status="node-limit";break; }
+          if (observedNodes.has(observed)) { observation.status="cycle";break; }
+          observedNodes.add(observed);
+          var entry = {id:null,type:null,fieldErrors:[]};
+          observation.nodes.push(entry);
+          try { var observedId=observed.id;entry.id=typeof observedId==="string"?observedId.slice(0,100):null; } catch(idError) { entry.fieldErrors.push("id"); }
+          try { var observedType=observed.type;entry.type=typeof observedType==="string"?observedType.slice(0,80):null; } catch(typeError) { entry.fieldErrors.push("type"); }
+          if(entry.type==="PAGE"){observation.status="page";break;}
+          try { observed=observed.parent; } catch(parentError) { entry.fieldErrors.push("parent");observation.status="parent-unavailable";break; }
+          if(!observed)observation.status="no-parent";
+        }
+      }
+    } catch(observationError) { /* Diagnostics cannot change invalidation. */ }
     var hasStyleChanges = false;
     var hasNodeChanges = false;
     var changedNodeIds = [];
@@ -7386,6 +7540,7 @@ figma.loadAllPagesAsync().then(function() {
     });
   });
 
+  catalogTraversalRegistry.ready = true;
   console.log('🌉 [Desktop Bridge] Document change, selection, and page listeners registered');
 }).catch(function(err) {
   console.warn('🌉 [Desktop Bridge] Could not register event listeners:', err);

@@ -2,28 +2,33 @@ import { z } from 'zod';
 import { compileOperation } from './scene-access.mjs';
 
 const id = z.string().min(1).max(160);
-const cursor = z.string().regex(/^\d+:[0-9a-f]{1,8}$/).optional();
+const cursor = z.string().regex(/^(?:\d+:[0-9a-f]{1,8}|(?:walk|verify):[a-zA-Z0-9_-]{1,80}:\d+)$/).optional();
+const traversalId = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).optional();
 const fileKey = z.string().min(1);
 
 export const catalogInventoryInputSchema = { fileKey, nodeId: id.optional() };
 export const catalogInventorySchema = z.object(catalogInventoryInputSchema).strict();
 export const catalogPageInputSchema = {
   fileKey, pageId: id, nodeId: id.optional(), mode: z.enum(['roles', 'manifest', 'resources']),
-  cursor, limit: z.number().int().min(1).max(200).optional(),
+  cursor, traversalId, verificationId:traversalId, requireExistingSnapshot:z.boolean().optional(), releaseTraversalIds:z.array(z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/)).max(200).optional(), limit: z.number().int().min(1).max(200).optional(),
   componentIds: z.array(id).min(1).max(8).optional(),
   manifestFingerprint: z.string().regex(/^[0-9a-f]{1,8}$/).optional(),
+  componentPublishStatusTimeoutMs: z.number().int().min(6000).max(20000).optional().describe('Только resources: конечное ожидание каждого getPublishStatusAsync компонента; default 6000 ms, без повторов и изменения общего deadline'),
 };
 export const catalogPageSchema = z.object(catalogPageInputSchema).strict().superRefine((value, ctx) => {
+  if(/^(walk|verify):/.test(value.cursor??'')&&!value.traversalId)ctx.addIssue({code:'custom',message:'walk cursor требует traversalId'});
+  if((value.requireExistingSnapshot||value.verificationId)&&!value.traversalId)ctx.addIssue({code:'custom',message:'requireExistingSnapshot требует traversalId'});
+  if(value.releaseTraversalIds&&(!value.traversalId||value.mode==='resources'))ctx.addIssue({code:'custom',message:'releaseTraversalIds требует traversalId и roles/manifest'});
   if (value.mode === 'resources') {
     if (!value.componentIds || !value.manifestFingerprint || value.cursor || value.limit) ctx.addIssue({code:'custom',message:'resources требует componentIds и manifestFingerprint без cursor/limit'});
     if (value.componentIds && new Set(value.componentIds).size !== value.componentIds.length) ctx.addIssue({code:'custom',message:'Повторяющиеся componentIds'});
-  } else if (value.componentIds || value.manifestFingerprint) ctx.addIssue({code:'custom',message:'componentIds и manifestFingerprint допустимы только для resources'});
+  } else if (value.componentIds || value.manifestFingerprint || value.componentPublishStatusTimeoutMs !== undefined) ctx.addIssue({code:'custom',message:'componentIds, manifestFingerprint и componentPublishStatusTimeoutMs допустимы только для resources'});
 });
 export const catalogExampleInputSchema = {
-  fileKey, pageId: id, nodeId: id, cursor, limit: z.number().int().min(1).max(200).optional(),
+  fileKey, pageId: id, nodeId: id, cursor, traversalId, verificationId:traversalId, requireExistingSnapshot:z.boolean().optional(), releaseTraversalIds:z.array(z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/)).max(200).optional(), limit: z.number().int().min(1).max(200).optional(),
   includePng: z.boolean().optional(), screenshotScale: z.number().min(0.5).max(4).optional(),
 };
-export const catalogExampleSchema = z.object(catalogExampleInputSchema).strict();
+export const catalogExampleSchema = z.object(catalogExampleInputSchema).strict().superRefine((value,ctx)=>{if(/^(walk|verify):/.test(value.cursor??'')&&!value.traversalId)ctx.addIssue({code:'custom',message:'walk cursor требует traversalId'});if((value.requireExistingSnapshot||value.verificationId)&&!value.traversalId)ctx.addIssue({code:'custom',message:'verification требует traversalId'});});
 
 // These functions are serialized into the Desktop plugin. Keep each operation
 // self-contained: MCP accepts typed data only and never exposes a JS argument.
@@ -55,7 +60,11 @@ async function pageScan(figma, input, access) {
     for (let current=node; current && current !== page; current=current.parent) if (deprecated(current)) return false;
     return true;
   };
-  const descendants = [], stack=[root];
+  let snapshot;
+  if(input.traversalId){access.catalog.traversal.release(input,page.id);const prepared=access.catalog.traversal.prepare(input,page,root,input.mode==='roles'?'source-roles':'manifest');if(prepared.progress)return prepared.progress;snapshot=prepared.state;}
+  const finish=result=>{if(snapshot){access.catalog.traversal.assertCurrent(snapshot);}return result;};
+  const effectiveCursor=/^(walk|verify):/.test(input.cursor??'')?undefined:input.cursor;
+  const descendants = snapshot?snapshot.nodes:[], stack=snapshot?[]:[root];
   let treeYieldCount=0, treeYieldWaitMs=0;
   diagnostics.mark('fullTree');
   while (stack.length) {
@@ -73,19 +82,19 @@ async function pageScan(figma, input, access) {
   }
   diagnostics.count({treeNodes:descendants.length,treeNodesVisited:descendants.length});
   diagnostics.mark('manifest');
-  const ids = descendants.filter(node => ['COMPONENT','COMPONENT_SET'].includes(node.type) && active(node)).map(node => node.id).sort();
+  const ids = snapshot?snapshot.ids:descendants.filter(node => ['COMPONENT','COMPONENT_SET'].includes(node.type) && active(node)).map(node => node.id).sort();
   diagnostics.count({manifestComponents:ids.length});
   const hash = value => {
     let result=2166136261;
     for (const char of JSON.stringify(value)) result=Math.imul(result^char.charCodeAt(0),16777619)>>>0;
     return result.toString(16);
   };
-  const manifestFingerprint = hash(ids);
+  const manifestFingerprint = snapshot?snapshot.manifestFingerprint:hash(ids);
   if (input.mode === 'manifest') {
     const fingerprint = manifestFingerprint;
     let offset=0;
-    if (input.cursor) {
-      const [position, expected]=input.cursor.split(':');
+    if (effectiveCursor) {
+      const [position, expected]=effectiveCursor.split(':');
       if (expected !== fingerprint) throw new Error('Курсор устарел: manifest изменился');
       offset=Number(position);
     }
@@ -93,11 +102,11 @@ async function pageScan(figma, input, access) {
     const limit=input.limit ?? 100, next=offset+limit;
     const unreadNodeCount=Math.max(0,ids.length-next);
     access.catalog.assertFile(input.fileKey, true);
-    return {schemaVersion:1,kind:'manifest',fileKey:input.fileKey,pageId:page.id,rootNodeId:root.id,
+    return finish({schemaVersion:1,kind:'manifest',fileKey:input.fileKey,pageId:page.id,rootNodeId:root.id,
       componentIds:ids.slice(offset,next),manifestFingerprint,complete:next>=ids.length,
-      cursor:input.cursor??null,nextCursor:next<ids.length?`${next}:${fingerprint}`:null,
+      ...(snapshot?{traversal:access.catalog.traversal.metadata(snapshot,input)}:{}),cursor:input.cursor??null,nextCursor:next<ids.length?`${next}:${fingerprint}`:null,
       offset,total:ids.length,fingerprint,coverage:{returned:Math.min(limit,ids.length-offset),total:ids.length},
-      unreadNodeIds:ids.slice(next,next+limit),unreadNodeCount,unreadNodeIdsComplete:unreadNodeCount<=limit};
+      unreadNodeIds:ids.slice(next,next+limit),unreadNodeCount,unreadNodeIdsComplete:unreadNodeCount<=limit});
   }
   if (input.mode === 'roles') {
     diagnostics.mark('roles');
@@ -119,11 +128,11 @@ async function pageScan(figma, input, access) {
       }
       return count;
     };
-    const candidates=descendants.filter(node => node.type==='COMPONENT_SET' && active(node)).map(node => ({
+    const candidates=snapshot?snapshot.candidates:descendants.filter(node => node.type==='COMPONENT_SET' && active(node)).map(node => ({
       id:node.id,name:node.name,type:node.type,
       variantIds:node.children.filter(child => child.type==='COMPONENT' && active(child)).map(child => child.id).sort(),
     }));
-    const pending=[root];
+    const pending=snapshot?[]:[root];
     while(pending.length){const node=pending.pop();
       if(!active(node)||node.type==='COMPONENT_SET')continue;
       if(node.type==='COMPONENT'||node.type==='INSTANCE'){
@@ -138,11 +147,11 @@ async function pageScan(figma, input, access) {
     candidates.sort((a,b)=>a.id.localeCompare(b.id));
     // A single cursor slices the tagged union. The complete role fingerprint
     // matches catalog-source-roles.mjs for assembled componentIds/candidates.
-    const fingerprint=hash({componentIds:ids,exampleCandidates:candidates});
+    const fingerprint=snapshot?snapshot.rolesFingerprint:hash({componentIds:ids,exampleCandidates:candidates});
     const tagged=[...ids.map(id=>({kind:'component',id})),...candidates.map(value=>({kind:'example',value}))];
     let offset=0;
-    if (input.cursor) {
-      const [position,expected]=input.cursor.split(':');
+    if (effectiveCursor) {
+      const [position,expected]=effectiveCursor.split(':');
       if(expected!==fingerprint)throw new Error('Курсор устарел: роли изменились');
       offset=Number(position);
     }
@@ -150,15 +159,16 @@ async function pageScan(figma, input, access) {
     const limit=input.limit??100,next=offset+limit,items=tagged.slice(offset,next);
     const unreadNodeCount=Math.max(0,tagged.length-next);
     access.catalog.assertFile(input.fileKey, true);
-    return {schemaVersion:1,kind:'source-roles',fileKey:input.fileKey,pageId:page.id,rootNodeId:root.id,
+    return finish({schemaVersion:1,kind:'source-roles',fileKey:input.fileKey,pageId:page.id,rootNodeId:root.id,
       componentIds:items.filter(item=>item.kind==='component').map(item=>item.id),
       exampleCandidates:items.filter(item=>item.kind==='example').map(item=>item.value),
-      complete:next>=tagged.length,cursor:input.cursor??null,nextCursor:next<tagged.length?`${next}:${fingerprint}`:null,
+      complete:next>=tagged.length,...(snapshot?{traversal:access.catalog.traversal.metadata(snapshot,input)}:{}),cursor:input.cursor??null,nextCursor:next<tagged.length?`${next}:${fingerprint}`:null,
       offset,total:tagged.length,counts:{componentIds:ids.length,exampleCandidates:candidates.length},fingerprint,
       coverage:{returned:items.length,total:tagged.length},
       unreadNodeIds:tagged.slice(next,next+limit).map(item=>item.kind==='component'?item.id:item.value.id),
-      unreadNodeCount,unreadNodeIdsComplete:unreadNodeCount<=limit};
+      unreadNodeCount,unreadNodeIdsComplete:unreadNodeCount<=limit});
   }
+  if(snapshot)access.catalog.traversal.assertCurrent(snapshot);
   // Each resource request proves its exact selected IDs still belong to the
   // current full manifest before returning any published-key evidence.
   diagnostics.mark('selectedIdsValidation',{selectedComponents:input.componentIds.length});
@@ -174,16 +184,25 @@ async function pageScan(figma, input, access) {
     gaps.push(gap);
   };
   for (const id of selected) {
-    const node=descendants.find(node=>node.id===id);
+    const node=snapshot?snapshot.byId.get(id)?.node:descendants.find(node=>node.id===id);
     if(!node)throw new Error('Компонент недоступен: '+id);
     let publishStatus;
-    diagnostics.mark('componentPublishStatus',{attemptedComponentStatuses:components.length+gaps.filter(gap=>gap.kind==='component').length+1});
-    try {publishStatus=await access.read(node.getPublishStatusAsync(),'статус компонента '+id);} catch(error) {unavailable(error,{kind:'component',id,reason:'publish-status-unavailable'});continue;}
+    diagnostics.mark('componentPublishStatus',{attemptedComponentStatuses:components.length+gaps.filter(gap=>gap.kind==='component').length+1,componentPublishStatusTimeoutMs:input.componentPublishStatusTimeoutMs??6000});
+    try {publishStatus=await access.read(node.getPublishStatusAsync(),'статус компонента '+id,input.componentPublishStatusTimeoutMs);} catch(error) {unavailable(error,{kind:'component',id,reason:'publish-status-unavailable'});continue;}
     if(!['CURRENT','CHANGED','UNPUBLISHED'].includes(publishStatus)) {gaps.push({kind:'component',id,reason:'publish-status-unavailable'});continue;}
     diagnostics.mark('selectedDescendants');
     for (const child of [node,...('findAll' in node?node.findAll(()=>true):[])]) relevant.set(child.id,child);
+    let variantProperties;const variantField=node.type==='COMPONENT'?'variantProperties':'componentPropertyDefinitions';
+    try{
+      if(node.type==='COMPONENT')variantProperties=node.variantProperties??null;
+      else {
+        // Modern API is authoritative. A failed/malformed getter must not be
+        // replaced by the deprecated getter or a fabricated empty complete map.
+        variantProperties=access.catalog.variantGroups(node.componentPropertyDefinitions);
+      }
+    }catch(cause){const error=new Error('Недоступное свойство компонента '+id+': '+variantField);error.code='CATALOG_PROPERTY_UNAVAILABLE';error.catalogSource={fileKey:input.fileKey,pageId:page.id,nodeId:id,field:variantField,message:String(cause.message||cause)};throw error;}
     components.push({id,name:node.name,key:node.key,kind:node.type==='COMPONENT'?'component':'component_set',publishStatus,
-      width:node.width,height:node.height,...(node.type==='COMPONENT'?{variantProperties:node.variantProperties??null}:{variantGroupProperties:node.variantGroupProperties??null})});
+      width:node.width,height:node.height,...(node.type==='COMPONENT'?{variantProperties}:{variantGroupProperties:variantProperties})});
   }
   diagnostics.count({representedComponents:components.length+gaps.filter(gap=>gap.kind==='component').length,selectedNodes:relevant.size});
   diagnostics.mark('resourceBindings');
@@ -229,9 +248,10 @@ async function pageScan(figma, input, access) {
     styles.push({id,name:style.name,key:style.key,styleType:style.type,publishStatus});
   }
   access.catalog.assertFile(input.fileKey, true);
+  if(snapshot)access.catalog.traversal.assertCurrent(snapshot);
   diagnostics.count({components:components.length,variables:variables.length,styles:styles.length,gaps:gaps.length});
   return {schemaVersion:1,kind:'resource-batch',fileKey:input.fileKey,pageId:page.id,rootNodeId:root.id,
-    manifestFingerprint,componentIds:selected,complete:true,scanComplete:true,
+    manifestFingerprint,componentIds:selected,complete:true,scanComplete:true,...(snapshot?{traversal:access.catalog.traversal.metadata(snapshot,input)}:{}),
     coverage:{componentIds:selected,representedComponentIds:[...components.map(value=>value.id),...gaps.filter(value=>value.kind==='component').map(value=>value.id)].sort()},
     counts:{components:components.length,variables:variables.length,styles:styles.length,gaps:gaps.length},components,variables,styles,gaps};
 }
@@ -239,54 +259,43 @@ async function pageScan(figma, input, access) {
 async function example(figma,input,access) {
   const diagnostics=access.diagnostics;
   const {page, root} = await access.catalog.scope(input, true);
-  const all=[],stack=[root];
+  let snapshot;
+  if(input.traversalId){access.catalog.traversal.release(input,page.id);const prepared=access.catalog.traversal.prepare(input,page,root,'example');if(prepared.progress)return prepared.progress;snapshot=prepared.state;}
+  const effectiveCursor=/^(walk|verify):/.test(input.cursor??'')?undefined:input.cursor;
+  const all=snapshot?snapshot.nodes:[],stack=snapshot?[]:[root];
   diagnostics.mark('fullTree');
   while(stack.length){access.check();
     if(all.length && all.length % 2048 === 0) {diagnostics.count({treeNodesVisited:all.length});await new Promise(resolve => setTimeout(resolve, 0));}
     const node=stack.pop();all.push(node);
-    if('children'in node)for(let index=node.children.length-1;index>=0;index--)stack.push(node.children[index]);
+    if('children'in node){const children=node.children;for(let index=children.length-1;index>=0;index--)stack.push(children[index]);}
   }
   diagnostics.count({treeNodes:all.length,treeNodesVisited:all.length});
   diagnostics.mark('fingerprint');
   const hash=value=>{let result=2166136261;for(const char of JSON.stringify(value))result=Math.imul(result^char.charCodeAt(0),16777619)>>>0;return result.toString(16);};
-  const fingerprint=hash(all.map(node=>[node.id,node.type,node.name,node.parent?.id??null,'children'in node?node.children.map(child=>child.id):[],node.type==='TEXT'?node.characters:null]));
+  const fingerprint=snapshot?snapshot.exampleFingerprint:hash(all.map(node=>[node.id,node.type,node.name,node.parent?.id??null,'children'in node?node.children.map(child=>child.id):[],node.type==='TEXT'?node.characters:null]));
   let offset=0;
-  if(input.cursor){const [position,expected]=input.cursor.split(':');if(expected!==fingerprint)throw new Error('Курсор устарел: дерево изменилось');offset=Number(position);}
+  if(effectiveCursor){const [position,expected]=effectiveCursor.split(':');if(expected!==fingerprint)throw new Error('Курсор устарел: дерево изменилось');offset=Number(position);}
   if(offset>all.length)throw new Error('Курсор вне дерева');
   const limit=input.limit??100,next=offset+limit,gaps=[];
   diagnostics.mark('exampleNodes',{selectedExampleNodes:Math.min(limit,all.length-offset)});
-  const safe=(node,field)=>{
-    try {const value=node[field];return value===figma.mixed?'MIXED':value;} catch(error){gaps.push({nodeId:node.id,field,reason:'property-unavailable',message:String(error.message||error)});return undefined;}
-  };
-  const fields=['visible','x','y','width','height','absoluteBoundingBox','relativeTransform','rotation','constraints','opacity','fills','strokes','strokeWeight','strokeAlign','strokeTopWeight','strokeBottomWeight','strokeLeftWeight','strokeRightWeight','dashPattern','cornerRadius','topLeftRadius','topRightRadius','bottomLeftRadius','bottomRightRadius','cornerSmoothing','clipsContent','effects','blendMode','isMask','maskType','fillStyleId','strokeStyleId','effectStyleId','gridStyleId','boundVariables','explicitVariableModes','layoutMode','layoutWrap','layoutSizingHorizontal','layoutSizingVertical','layoutPositioning','itemSpacing','paddingTop','paddingRight','paddingBottom','paddingLeft','primaryAxisAlignItems','counterAxisAlignItems','counterAxisSpacing','strokesIncludedInLayout','itemReverseZIndex','minWidth','maxWidth','minHeight','maxHeight','reactions','componentPropertyReferences','vectorPaths','booleanOperation','pointCount','strokeCap','strokeJoin','componentProperties','overrides','variantProperties','variantGroupProperties','componentPropertyDefinitions','remote','key','description'];
-  const textFields=['characters','fontName','fontSize','lineHeight','letterSpacing','textCase','textDecoration','paragraphSpacing','paragraphIndent','listOptions','listSpacing','indentation','textStyleId','textAlignHorizontal','textAlignVertical','textAutoResize','hasMissingFont'];
   const nodes=[];
   for(const node of all.slice(offset,next)){
-    const value={id:node.id,parentId:node.parent?.id??null,childIds:'children'in node?node.children.map(child=>child.id):[],
-      childIndex:node.parent?.children?.findIndex(child=>child.id===node.id)??-1,type:node.type,name:node.name,
-      properties:{}};
-    for(const field of fields)if(field in node){
-      if(field==='componentPropertyDefinitions'&&node.type==='COMPONENT'&&node.parent?.type==='COMPONENT_SET')continue;
-      const item=safe(node,field);if(item!==undefined)value.properties[field]=item;
-    }
-    if(node.type==='TEXT'){
-      for(const field of textFields)if(field in node){const item=safe(node,field);if(item!==undefined)value.properties[field]=item;}
-      for(const [label,segmentFields] of [['textSegments',['fontName','fontSize','lineHeight','letterSpacing','textCase','textDecoration','paragraphSpacing','paragraphIndent','fills','textStyleId','fillStyleId','boundVariables']],['hyperlinks',['hyperlink']]]){
-        try {value.properties[label]=node.getStyledTextSegments(segmentFields);} catch(error){gaps.push({nodeId:node.id,field:label,reason:'property-unavailable',message:String(error.message||error)});}
-      }
-    }
+    const captured=snapshot?access.catalog.traversal.readExampleNode(snapshot,node):access.catalog.exampleNode(figma,node);
+    const value=captured.value;gaps.push(...captured.gaps);
     if(node.type==='INSTANCE'){
       try {const component=await access.read(node.getMainComponentAsync(),'исходный компонент '+node.id);
         value.mainComponent=component?{status:'resolved',id:component.id,key:component.key,name:component.name,remote:component.remote}:{status:'missing'};
       } catch(error){if(error?.code==='FIGMA_READ_TIMEOUT'||error?.code==='OPERATION_CANCELLED')throw error;access.check();value.mainComponent={status:'unavailable',message:String(error.message||error)};gaps.push({nodeId:node.id,field:'mainComponent',reason:'resource-unavailable'});}
     }
-    nodes.push(value);
+    if(snapshot){access.catalog.traversal.readExampleNode(snapshot,node);access.catalog.traversal.recordProvenance(snapshot,node,value.mainComponent);}
+    nodes.push(JSON.parse(JSON.stringify(value)));
   }
   if(JSON.stringify(nodes).length*3>4000000)throw new Error('Фрагмент примера слишком велик (>4 МБ); уменьшите limit или выберите меньшую ветку');
   access.catalog.assertFile(input.fileKey, true);
+  if(snapshot)access.catalog.traversal.assertCurrent(snapshot);
   const unreadNodeCount=Math.max(0,all.length-next);
   return {schemaVersion:1,kind:'example',fileKey:input.fileKey,pageId:page.id,rootNodeId:root.id,
-    nodes,gaps,complete:next>=all.length,cursor:input.cursor??null,nextCursor:next<all.length?`${next}:${fingerprint}`:null,
+    nodes,gaps,complete:next>=all.length,...(snapshot?{traversal:access.catalog.traversal.metadata(snapshot,input)}:{}),cursor:input.cursor??null,nextCursor:next<all.length?`${next}:${fingerprint}`:null,
     offset,total:all.length,fingerprint,coverage:{returned:nodes.length,total:all.length,firstNodeId:nodes[0]?.id??null,lastNodeId:nodes.at(-1)?.id??null},
     unreadNodeIds:all.slice(next,next+limit).map(node=>node.id),unreadNodeCount,unreadNodeIdsComplete:unreadNodeCount<=limit,
     screenshotNodeId:input.includePng?root.id:null};

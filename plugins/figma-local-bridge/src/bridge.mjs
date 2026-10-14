@@ -506,7 +506,8 @@ export class FigmaBridge {
       const response = await this.wsServer.sendCommand("GET_EXECUTION_STATUS", {}, 3000, fileKey);
       if (!response?.success || typeof response.busy !== 'boolean') throw new Error('Invalid execution status');
       return { fileKey, responsive: true, busy: response.busy, pendingExecutions: response.pendingExecutions,
-        activeOperation: response.activeOperation || null };
+        activeOperation: response.activeOperation || null,
+        ...(response.fontService ? { fontService: response.fontService } : {}) };
     } catch (error) {
       return { fileKey, responsive: false, code: error.code || 'PLUGIN_UNRESPONSIVE', error: error.message };
     }

@@ -45,6 +45,19 @@ export function toolFailure(error, timing) {
   return { isError: true, content: [{ type: "text", text: validation ? payload.error : JSON.stringify(payload) }], structuredContent: payload };
 }
 
+// Keep journal metadata construction separate from target/preview execution.
+function operationMetadata(input, name, mutating) {
+  const operation = { name, mutating };
+  if (name === 'assemble_library_template') {
+    operation.componentImportKeys = input.mode === 'apply'
+      ? [...new Set(input.snapshot?.nodes?.map(node => node.libraryKey).filter(Boolean) || [])]
+      : [];
+  }
+  if (name === 'import_variables') operation.importInput = input;
+  else if (['use_component', 'swap_nested_components'].includes(name)) operation.operationInput = input;
+  return operation;
+}
+
 // The write and its optional preview share the same pinned connection target and queue.
 export async function runToolOperation(bridge, input, code, {
   mutating = true, timeout, screenshotRequested = false, screenshotNode, extendPayload, operationName,
@@ -54,10 +67,10 @@ export async function runToolOperation(bridge, input, code, {
   try {
     const response = await bridge.runInFile(input.fileKey, async (target) => {
       targetResolved();
-      const payload = await timing.measure('execute', () => bridge.execute(code, { ...target, timeout, operation: { name: operationName, mutating, ...(operationName === 'import_variables' ? { importInput: input } : operationName === 'use_component' ? { operationInput: input } : {}) } }));
+      const payload = await timing.measure('execute', () => bridge.execute(code, { ...target, timeout, operation: operationMetadata(input, operationName, mutating) }));
       payload.operationStatus = mutating ? "applied" : "read";
       if (extendPayload) extendPayload(payload);
-      if (!screenshotRequested) return { payload };
+      if (!(typeof screenshotRequested === 'function' ? screenshotRequested(payload) : screenshotRequested)) return { payload };
       try {
         const image = await timing.measure('screenshot', () => {
           const nodeId = screenshotNode(payload);

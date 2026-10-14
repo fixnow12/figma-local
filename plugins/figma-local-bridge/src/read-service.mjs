@@ -1,17 +1,18 @@
 // Serialized into Plugin API code. Only wrap native read/cache promises here:
 // abandoning an await must never allow a delayed setter/import/canvas write.
 export function createReadService(figma, check = () => {}) {
-  async function wait(promise, resource) {
+  async function wait(promise, resource, timeoutMs = 6000) {
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 6000 || timeoutMs > 20000) throw new Error('Invalid native read timeout');
     let timer;
     try {
       const value = await Promise.race([promise, new Promise((_, reject) => {
         timer = setTimeout(() => {
-          const error = new Error("Figma не завершила чтение за 6 секунд: " + resource + ". Данные не получены; отсутствие ресурса не подтверждено.");
+          const error = new Error("Figma не завершила чтение за " + timeoutMs / 1000 + " секунд: " + resource + ". Данные не получены; отсутствие ресурса не подтверждено.");
           error.code = "FIGMA_READ_TIMEOUT";
           error.blockers = [{ type: "read", resource }];
           error.nextStep = "Проверьте get_status с тем же fileKey. Не повторяйте запрос циклом с sleep. Для узла прочитайте меньшую ветку или родительский экземпляр; для библиотеки проверьте доступность ресурса в целевом файле. Тайм-аут чтения не подтверждает сбой другого файла.";
           reject(error);
-        }, 6000);
+        }, timeoutMs);
       })]);
       check();
       return value;

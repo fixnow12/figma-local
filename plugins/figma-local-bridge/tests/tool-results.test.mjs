@@ -136,3 +136,54 @@ test('замер ошибки подключения сохраняет unknown 
     [['resolveTarget', 'error']]);
   assert.deepEqual(JSON.parse(response.content[0].text), response.structuredContent);
 });
+test('catalog progress skips PNG until a verified snapshot has an exact screenshot node',async()=>{
+ const bridge={runInFile:async(key,fn)=>fn({fileKey:key}),execute:async()=>({result:{complete:false,total:null,screenshotNodeId:null}}),captureScreenshot:async()=>{throw Error('must not capture incomplete traversal');}};
+ const result=await runToolOperation(bridge,{fileKey:'fixture'},'typed fixture',{mutating:false,screenshotRequested:p=>Boolean(p.result.screenshotNodeId),screenshotNode:p=>p.result.screenshotNodeId});
+ assert.equal(result.isError,undefined);assert.equal(result.structuredContent.result.complete,false);assert.equal(result.structuredContent.result.total,null);assert.equal(result.structuredContent.screenshot,undefined);assert.equal(result.structuredContent.warnings,undefined);
+});
+
+const metadataCases = [
+  { name: 'patch_nodes', input: {}, expected: {} },
+  { name: 'inspect_node', input: {}, mutating: false, expected: {} },
+  { name: 'import_variables', input: {collections: ['fixture']}, inputField: 'importInput' },
+  { name: 'use_component', input: {libraryKey: 'fixture'}, inputField: 'operationInput' },
+  { name: 'swap_nested_components', input: {swaps: []}, inputField: 'operationInput' },
+  { name: 'assemble_library_template', input: {mode: 'apply', snapshot: {nodes: [
+    {libraryKey: 'a'}, {libraryKey: ''}, {libraryKey: 'a'}, {}, {libraryKey: 'b'},
+  ]}}, expected: {componentImportKeys: ['a', 'b']} },
+  { name: 'assemble_library_template', input: {mode: 'dry-run', snapshot: {nodes: [{libraryKey: 'a'}]}}, expected: {componentImportKeys: []} },
+  { name: 'assemble_library_template', input: {mode: 'apply'}, expected: {componentImportKeys: []} },
+  { name: undefined, input: {}, expected: {} },
+];
+for (const [index, sample] of metadataCases.entries()) {
+  test(`operation metadata keeps exact target, input and mutation fields: ${index}`, async () => {
+    const input = {fileKey: 'fixture', ...sample.input};
+    const mutating = sample.mutating ?? true;
+    let calls = 0;
+    const target = {fileKey: 'fixture', pageId: 'page-fixture'};
+    const bridge = {
+      runInFile: async (fileKey, execute, options) => {
+        assert.equal(fileKey, input.fileKey);
+        assert.deepEqual(options, {requireExplicitFile: mutating});
+        return execute(target);
+      },
+      execute: async (code, options) => {
+        calls++;
+        assert.equal(code, 'synthetic fixture code');
+        assert.deepEqual(options, {...target, timeout: 1234, operation: {
+          name: sample.name, mutating,
+          ...(sample.inputField ? {[sample.inputField]: input} : sample.expected),
+        }});
+        if (sample.inputField) assert.equal(options.operation[sample.inputField], input);
+        return {result: {fixture: true}};
+      },
+      captureScreenshot: () => assert.fail('No preview requested'),
+    };
+    const response = await runToolOperation(bridge, input, 'synthetic fixture code', {
+      operationName: sample.name, mutating, timeout: 1234,
+    });
+    assert.equal(response.isError, undefined);
+    assert.equal(response.structuredContent.operationStatus, mutating ? 'applied' : 'read');
+    assert.equal(calls, 1);
+  });
+}

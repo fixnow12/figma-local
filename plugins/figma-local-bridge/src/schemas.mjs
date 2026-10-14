@@ -721,6 +721,7 @@ export const useComponentInputSchema = {
   sourceKey: keySchema.optional(),
   sourceId: z.string().min(1).max(160).optional(),
   libraryKey: z.string().min(1).optional(),
+  librarySetKey: z.string().regex(/^[a-f0-9]{40}$/).optional().describe("Exact published component-set key; requires exact selected libraryKey and a non-empty exact variant selector. No direct import fallback."),
   parentKey: keySchema.optional(),
   parentId: z.string().min(1).max(160).optional(),
   key: keySchema,
@@ -743,6 +744,10 @@ export const useComponentSchema = z
         code: z.ZodIssueCode.custom,
         message: "Укажите ровно один источник: sourceKey, sourceId или libraryKey",
       });
+    }
+    if (value.librarySetKey !== undefined) {
+      if (!/^[a-f0-9]{40}$/.test(value.libraryKey ?? "") || value.sourceKey || value.sourceId) context.addIssue({ code: z.ZodIssueCode.custom, message: "librarySetKey requires the exact child libraryKey and no local source" });
+      if (!value.variant || !Object.keys(value.variant).length || Object.entries(value.variant).some(([key, item]) => !key.trim().length || !item.trim().length)) context.addIssue({ code: z.ZodIssueCode.custom, message: "librarySetKey requires a non-empty exact variant selector with non-empty names and values" });
     }
     if (value.parentKey && value.parentId) context.addIssue({ code: z.ZodIssueCode.custom, message: "Укажите parentKey или parentId, но не оба поля" });
   });
