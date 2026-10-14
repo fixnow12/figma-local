@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "prewarm": {"fileKey": "prewarm-fixture-file", "pageId": "100:1"},
+  "diagnosticExample": {
+    "fileKey": "diagnostic-fixture-file", "pageId": "200:1",
+    "parentNodeId": "200:4", "nodeIds": ["200:2", "200:3"]
+  }
+}

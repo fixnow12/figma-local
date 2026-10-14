@@ -1,3 +1,4 @@
+import{prewarmSchema}from'../src/catalog-prewarm.mjs';
 import {readNodeScopeSchema} from '../src/node-scope.mjs';
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -6,6 +7,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import { screenSpecPublicSchema } from "../src/schemas.mjs";
 import {catalogPageSchema} from '../src/catalog-read.mjs';
 import {readComponentMetadataSchema} from '../src/component-metadata.mjs';
+import {diagnosticExampleSchema} from '../src/diagnostic-example.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 export function designSchemaText() {
@@ -24,8 +26,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   for(const [file,expected] of [
     ['design-spec.schema.json',designSchemaText()],
     ['catalog-page.schema.json',typed(catalogPageSchema,'ScanCatalogPage')],
+    ['prewarm.schema.json',typed(prewarmSchema,'PrewarmCatalogPage')],
     ['node-scope.schema.json',typed(readNodeScopeSchema,'ReadNodeScope')],
     ['component-metadata.schema.json',typed(readComponentMetadataSchema,'ReadComponentMetadata')],
+    ['diagnostic-example.schema.json',typed(diagnosticExampleSchema,'ReadDiagnosticExample')],
   ]){
     const path=join(root,'schemas',file);
     if(process.argv.includes('--check')){

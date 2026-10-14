@@ -12,7 +12,7 @@ export function harness(figma,globals={}){
  const start=source.indexOf('var executeCodeQueue = Promise.resolve();');
  const end=source.indexOf('\n  // ============================================================================\n  // UPDATE_VARIABLE',start);
  assert.ok(start>0&&end>start);
- const declarations=['catalogTraversalRegistry'].map(n=>source.match(new RegExp('^var '+n+' = .*;$','m'))?.[0]??'').join('\n');
+ const declarations=['catalogTraversalRegistry','catalogPrewarmRegistry'].map(n=>source.match(new RegExp('^var '+n+' = .*;$','m'))?.[0]??'').join('\n');
  let now=1000,sequence=0,timerSequence=0;
  const timers=new Map(),messages=[],results=new Map();
  figma.ui={postMessage:m=>{messages.push(m);if(m.type==='EXECUTE_CODE_RESULT')results.get(m.requestId)?.resolve(m);}};

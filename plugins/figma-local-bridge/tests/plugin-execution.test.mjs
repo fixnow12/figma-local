@@ -19,8 +19,10 @@ async function executionHandler(figma, globals = {}) {
     messages.push(message);
     if (message.type === "EXECUTE_CODE_RESULT") listeners.get(message.requestId)?.(message);
   } };
-  const registryDeclaration=source.match(/^var catalogTraversalRegistry = .*;$/m)?.[0];
-  assert.ok(registryDeclaration);
+  const registryDeclaration=['catalogTraversalRegistry','catalogPrewarmRegistry'].map(name=>{
+    const declaration=source.match(new RegExp('^var '+name+' = .*;$','m'))?.[0];
+    assert.ok(declaration, name);return declaration;
+  }).join('\n');
   vm.runInNewContext(registryDeclaration+"\n"+source.slice(start, end) + "\n};", {
     figma, setTimeout, clearTimeout, console: { log() {}, warn() {}, error() {} }, ...globals,
   });

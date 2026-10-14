@@ -8,6 +8,7 @@
 // same release number as package.json, .codex-plugin/plugin.json and the MCP server.
 var PLUGIN_VERSION = '0.3.0';
 // Catalog snapshots never mutate canvas or clientStorage. Document events invalidate them.
+var catalogPrewarmRegistry = {ready:false,sessionId:Date.now().toString(36)+'-prewarm-'+Math.random().toString(36).slice(2),used:false,state:null,observe:null};
 var catalogTraversalRegistry = {ready:false,sessionId:Date.now().toString(36)+'-'+Math.random().toString(36).slice(2),generation:0,sessions:new Map(),invalidated:new Map()};
 
 console.log('🌉 [Desktop Bridge] Plugin loaded (v' + PLUGIN_VERSION + ')');
@@ -502,7 +503,7 @@ figma.ui.onmessage = async (msg) => {
       mutating: !msg.operation || msg.operation.mutating !== false, startedAt: Date.now(), timedOut: false };
     var journalSequence = 0;
     var journalMeta = msg.operation && msg.operation.journal;
-    var executionControl = { cancelled: false, fontService: fontServiceRegistry, catalogTraversal:catalogTraversalRegistry, report: function(event) {
+    var executionControl = { cancelled: false, fontService: fontServiceRegistry, catalogTraversal:catalogTraversalRegistry, catalogPrewarm:catalogPrewarmRegistry, report: function(event) {
       if(!journalMeta)return;
       figma.ui.postMessage({type:'OPERATION_JOURNAL_EVENT',data:Object.assign({},event,journalMeta,{sequence:++journalSequence})});
     } };
@@ -7272,6 +7273,8 @@ figma.ui.onmessage = async (msg) => {
 // ============================================================================
 figma.loadAllPagesAsync().then(function() {
   figma.on('documentchange', function(event) {
+    // Independent diagnostic journal; never bypasses catalog generation guards.
+    if(typeof catalogPrewarmRegistry!=='undefined'&&catalogPrewarmRegistry.observe)catalogPrewarmRegistry.observe(event);
     // Retain global epoch semantics: only proved independence from ALL snapshots
     // can preserve it. Cross-page component ancestry/dependencies fail closed.
     var catalogIndependent = false;
@@ -7541,6 +7544,7 @@ figma.loadAllPagesAsync().then(function() {
   });
 
   catalogTraversalRegistry.ready = true;
+  if(typeof catalogPrewarmRegistry!=='undefined')catalogPrewarmRegistry.ready = true;
   console.log('🌉 [Desktop Bridge] Document change, selection, and page listeners registered');
 }).catch(function(err) {
   console.warn('🌉 [Desktop Bridge] Could not register event listeners:', err);

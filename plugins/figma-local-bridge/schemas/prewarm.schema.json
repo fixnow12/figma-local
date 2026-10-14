@@ -1,0 +1,34 @@
+{
+  "$ref": "#/definitions/PrewarmCatalogPage",
+  "definitions": {
+    "PrewarmCatalogPage": {
+      "type": "object",
+      "properties": {
+        "fileKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "pageId": {
+          "type": "string",
+          "pattern": "^\\d+:\\d+$"
+        },
+        "prewarmId": {
+          "type": "string",
+          "pattern": "^cards-prewarm-[a-zA-Z0-9_-]{1,60}$"
+        },
+        "cursor": {
+          "type": "string",
+          "pattern": "^prewarm:cards-prewarm-[a-zA-Z0-9_-]{1,60}:\\d+$"
+        }
+      },
+      "required": [
+        "fileKey",
+        "pageId",
+        "prewarmId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

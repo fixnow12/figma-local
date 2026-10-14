@@ -259,6 +259,7 @@ async function pageScan(figma, input, access) {
 async function example(figma,input,access) {
   const diagnostics=access.diagnostics;
   const {page, root} = await access.catalog.scope(input, true);
+  if(access.catalog.diagnosticProjection&&(root.type!=='COMPONENT'||root.parent?.type!=='COMPONENT_SET'||root.parent.id!==input.diagnosticParentNodeId))throw Error('Diagnostic root type or parent changed');
   let snapshot;
   if(input.traversalId){access.catalog.traversal.release(input,page.id);const prepared=access.catalog.traversal.prepare(input,page,root,'example');if(prepared.progress)return prepared.progress;snapshot=prepared.state;}
   const effectiveCursor=/^(walk|verify):/.test(input.cursor??'')?undefined:input.cursor;
@@ -304,3 +305,5 @@ async function example(figma,input,access) {
 export const buildCatalogInventoryCode=input=>compileOperation(inventory,input,{readOnly:true,catalogDiagnostics:true});
 export const buildCatalogPageCode=input=>compileOperation(pageScan,input,{readOnly:true,catalogDiagnostics:true});
 export const buildCatalogExampleCode=input=>compileOperation(example,input,{readOnly:true,catalogDiagnostics:true});
+// Internal builder used only by the separate, exact-scope typed diagnostic tool.
+export const buildDiagnosticExampleProjectionCode=input=>compileOperation(example,input,{readOnly:true,catalogDiagnostics:true,diagnosticProjection:true});

@@ -1,3 +1,4 @@
+import{prewarmInputSchema,prewarmSchema,buildPrewarmCode}from'./catalog-prewarm.mjs';
 import {readNodeScopeInputSchema,readNodeScopeSchema,buildReadNodeScopeCode} from './node-scope.mjs';
 import {readTextStyleInputSchema,readTextStyleSchema,buildReadTextStyleCode} from './read-text-style.mjs';
 import {readComponentMetadataInputSchema,readComponentMetadataSchema,buildReadComponentMetadataCode} from './component-metadata.mjs';
@@ -31,6 +32,7 @@ import { BrokerClient } from "./broker-client.mjs";
 import { runtimeInfo, sourceRevision, runtimeDiagnostics } from "./runtime-info.mjs";
 import { exportAssetsInputSchema, exportAssetsSchema, buildExportAssetsCode } from "./export-assets.mjs";
 import { catalogInventoryInputSchema, catalogInventorySchema, catalogPageInputSchema, catalogPageSchema, catalogExampleInputSchema, catalogExampleSchema, buildCatalogInventoryCode, buildCatalogPageCode, buildCatalogExampleCode } from './catalog-read.mjs';
+import {diagnosticExampleInputSchema,runDiagnosticExample} from './diagnostic-example.mjs';
 import { recreateScreenInputSchema, recreateScreen } from "./reconstruction.mjs";
 import {
   inspectSelectionInputSchema,
@@ -261,6 +263,7 @@ function registerGeneratedTool(name, config, schema, buildCode, { mutating = tru
   });
 }
 
+registerGeneratedTool('prewarm_catalog_page',{title:'Bounded configured-page getter prewarm',description:'Diagnostic only, exact locally configured page. Ordered full-depth preparatory capture and final topology check; no PNG, catalog snapshot, FULL or apply. One finite pass, no restart or retry.',inputSchema:prewarmInputSchema,annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:false}},prewarmSchema,buildPrewarmCode,{mutating:false});
 
 registerGeneratedTool('read_node_scope', {
   title:'Прочитать точный узел и его ancestry',
@@ -297,6 +300,12 @@ registerGeneratedTool('scan_catalog_page', {
   annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true},
 },catalogPageSchema,buildCatalogPageCode,{mutating:false});
 
+server.registerTool('read_diagnostic_example', {
+  title:'Read configured diagnostic tree',
+  description:'Diagnostic only: explicitly configured component roots, full-depth bounded tree and optional verified PNG. Skips three known failing property getters with explicit gaps. Never catalog FULL or resource eligibility.',
+  inputSchema:diagnosticExampleInputSchema,
+  annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true},
+},async input=>{try{return await runDiagnosticExample(bridge,input);}catch(error){return fail(error);}});
 
 server.registerTool('read_catalog_example', {
   title:'Прочитать пример каталога',

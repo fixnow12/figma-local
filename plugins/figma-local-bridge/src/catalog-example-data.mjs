@@ -1,6 +1,6 @@
 /** Synchronous, detached example data shared by capture, verification and output. */
 import {normalizeComponentVariantGroups} from './component-definitions.mjs';
-export function captureCatalogExampleNode(figma,node,children,childIndex){
+export function captureCatalogExampleNode(figma,node,children,childIndex,projection){
   const gaps=[];
   let definitionsRead=false,definitions,definitionsError;
   const modernDefinitions=()=>{
@@ -19,6 +19,9 @@ export function captureCatalogExampleNode(figma,node,children,childIndex){
   const textFields=['characters','fontName','fontSize','lineHeight','letterSpacing','textCase','textDecoration','paragraphSpacing','paragraphIndent','listOptions','listSpacing','indentation','textStyleId','textAlignHorizontal','textAlignVertical','textAutoResize','hasMissingFont'];
   const value={id:node.id,parentId:node.parent?.id??null,childIds:(children??('children'in node?node.children:[])).map(child=>child.id),childIndex:childIndex??(node.parent?.children?.findIndex(child=>child.id===node.id)??-1),type:node.type,name:node.name,properties:{}};
     for(const field of fields)if(field in node||node.type==='COMPONENT_SET'&&field==='variantGroupProperties'){
+      if(projection==='chat-known-source-errors-v1'&&['componentPropertyDefinitions','variantGroupProperties','variantProperties'].includes(field)){
+        gaps.push({nodeId:node.id,field,reason:'skipped-known-source-error',projection,absenceConfirmed:false});continue;
+      }
       if(field==='componentPropertyDefinitions'&&node.type==='COMPONENT'&&node.parent?.type==='COMPONENT_SET')continue;
       const item=safe(node,field);if(item!==undefined)value.properties[field]=item;
     }
