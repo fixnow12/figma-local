@@ -23,12 +23,16 @@
     "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
     "tweetnacl": "1.0.3",
     "ws": "8.21.3",
     "zod": "3.25.76"
   },
   "devDependencies": {
     "zod-to-json-schema": "3.25.2"
+  },
+  "overrides": {
+    "hono": "4.13.7",
+    "proxy-addr": "2.0.8"
   }
 }

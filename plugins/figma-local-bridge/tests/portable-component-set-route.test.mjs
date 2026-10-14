@@ -2,13 +2,14 @@
 // Dependencies are explicitly bound to an existing immutable installation; no server connection.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {registerHooks} from 'node:module';
+import * as nodeModule from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {mkdtempSync,readFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 const dependencyRoot=process.env.BRIDGE_TEST_DEPENDENCY_ROOT;
-const hook=dependencyRoot && registerHooks({resolve(name,context,next){return name==='zod'?{url:pathToFileURL(join(dependencyRoot,'zod/index.js')).href,shortCircuit:true}:next(name,context);}});
+if(dependencyRoot && typeof nodeModule.registerHooks!=='function')throw Error('BRIDGE_TEST_DEPENDENCY_ROOT needs Node with module.registerHooks; standard Node20 tests use local npm ci dependencies');
+const hook=dependencyRoot && nodeModule.registerHooks({resolve(name,context,next){return name==='zod'?{url:pathToFileURL(join(dependencyRoot,'zod/index.js')).href,shortCircuit:true}:next(name,context);}});
 const {useComponentInputSchema,useComponentSchema}=await import('../src/schemas.mjs');
 const {buildUseComponentCode}=await import('../src/figma-code.mjs');
 const {McpServer}=await import(dependencyRoot ? pathToFileURL(join(dependencyRoot,'@modelcontextprotocol/sdk/dist/esm/server/mcp.js')).href : '@modelcontextprotocol/sdk/server/mcp.js');
