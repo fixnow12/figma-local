@@ -1,0 +1,58 @@
+{
+  "$ref": "#/definitions/ReadDiagnosticExample",
+  "definitions": {
+    "ReadDiagnosticExample": {
+      "type": "object",
+      "properties": {
+        "fileKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "pageId": {
+          "type": "string",
+          "pattern": "^\\d+:\\d+$"
+        },
+        "nodeId": {
+          "type": "string",
+          "pattern": "^\\d+:\\d+$"
+        },
+        "traversalId": {
+          "type": "string",
+          "pattern": "^diag-chat-[a-zA-Z0-9_-]{1,60}$"
+        },
+        "cursor": {
+          "type": "string",
+          "pattern": "^(?:\\d+:[0-9a-f]{1,8}|(?:walk|verify):[a-zA-Z0-9_-]{1,80}:\\d+)$"
+        },
+        "verificationId": {
+          "type": "string",
+          "pattern": "^diag-check-[a-zA-Z0-9_-]{1,60}$"
+        },
+        "requireExistingSnapshot": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "includePng": {
+          "type": "boolean"
+        },
+        "screenshotScale": {
+          "type": "number",
+          "const": 1
+        }
+      },
+      "required": [
+        "fileKey",
+        "pageId",
+        "nodeId",
+        "traversalId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

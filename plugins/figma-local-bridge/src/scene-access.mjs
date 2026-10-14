@@ -90,7 +90,7 @@ export function createCatalogDiagnostics() {
   };
 }
 
-export function compileOperation(operation, input, { mutationSafety = false, readOnly = false, catalogDiagnostics = false } = {}) {
+export function compileOperation(operation, input, { mutationSafety = false, readOnly = false, catalogDiagnostics = false, diagnosticProjection = false } = {}) {
   const json = JSON.stringify(input).replaceAll("</", "<\\/");
   return `const fontService = (${createFontService.toString()})(typeof executionControl === "undefined" ? undefined : executionControl);
   const check = () => {
@@ -114,11 +114,17 @@ export function compileOperation(operation, input, { mutationSafety = false, rea
   access.catalog = (${createCatalogReadAccess.toString()})(figma, access);
   access.catalog.variantGroups = normalizeComponentVariantGroups;
   const captureExampleNode = ${captureCatalogExampleNode.toString()};
-  access.catalog.exampleNode = (figma,node,children,childIndex) => captureExampleNode(figma,node,children,childIndex);
-  access.catalog.traversal = (${createCatalogTraversal.toString()})(figma, access, typeof executionControl !== "undefined" ? executionControl.catalogTraversal : undefined, access.catalog.exampleNode);
+  access.catalog.diagnosticProjection = ${diagnosticProjection ? JSON.stringify('chat-known-source-errors-v1') : 'null'};
+  access.catalog.exampleNode = (figma,node,children,childIndex) => captureExampleNode(figma,node,children,childIndex,access.catalog.diagnosticProjection);
+  access.catalog.traversal = (${createCatalogTraversal.toString()})(figma, access, typeof executionControl !== "undefined" ? executionControl.catalogTraversal : undefined, access.catalog.exampleNode,access.catalog.diagnosticProjection);
   if (typeof executionControl !== "undefined") executionControl.catalogDiagnosticsSnapshot = () => catalogDiagnostics.snapshot();` : ''}
   try {
     const result = await (${operation.toString()})(figma, ${json}, access, safety);
+    ${diagnosticProjection ? `result.kind='diagnostic-tree';
+    result.projection='chat-known-source-errors-v1';
+    result.catalogEligible=false;result.catalogFull=false;
+    result.treeComplete=result.complete===true;delete result.complete;
+    result.propertyCoverage={complete:false,omittedFields:['componentPropertyDefinitions','variantGroupProperties','variantProperties'],reason:'skipped-known-source-error',absenceConfirmed:false};` : ''}
     ${catalogDiagnostics ? `catalogDiagnostics.mark('complete');
     result.catalogDiagnostics = catalogDiagnostics.snapshot();` : ''}
     return result;

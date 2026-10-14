@@ -15,7 +15,7 @@ async function harness(mock,globals={}){
  assert.ok(start>0&&end>start);
  const messages=[],timers=new Set();let notifyResult;
  mock.figma.ui={postMessage:m=>{messages.push(m);if(m.type==='EXECUTE_CODE_RESULT')notifyResult?.(m);}};
- const registryDeclarations=['catalogTraversalRegistry'].map(name=>source.match(new RegExp('^var '+name+' = .*;$','m'))?.[0]??'').join('\n');
+ const registryDeclarations=['catalogTraversalRegistry','catalogPrewarmRegistry'].map(name=>source.match(new RegExp('^var '+name+' = .*;$','m'))?.[0]??'').join('\n');
  vm.runInNewContext(registryDeclarations+'\n'+source.slice(start,end)+'\n};',{figma:mock.figma,console:{log(){},warn(){},error(){}},setTimeout:(fn,ms)=>{const t=setTimeout(()=>{timers.delete(t);fn();},ms===8000?5:ms);timers.add(t);return t;},clearTimeout:t=>{timers.delete(t);clearTimeout(t);},...globals});
  let seq=0;
  return {messages,timers,result(){return new Promise(resolve=>{notifyResult=resolve;});},async run(code,timeout=1000){const requestId=String(++seq);await mock.figma.ui.onmessage({type:'EXECUTE_CODE',requestId,code,timeout});return messages.find(m=>m.requestId===requestId&&m.type==='EXECUTE_CODE_RESULT');},async status(){await mock.figma.ui.onmessage({type:'GET_EXECUTION_STATUS',requestId:'status'});return messages.filter(m=>m.type==='GET_EXECUTION_STATUS_RESULT').at(-1);}};

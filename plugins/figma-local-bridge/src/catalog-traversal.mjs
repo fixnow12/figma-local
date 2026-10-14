@@ -1,5 +1,5 @@
 /** Serialized into typed catalog operations; state lives only in the plugin session. */
-export function createCatalogTraversal(figma, access, registry, captureExampleNode) {
+export function createCatalogTraversal(figma, access, registry, captureExampleNode, projection) {
   const fail=(message,code='CATALOG_CURSOR_INVALID')=>{const e=new Error(message);e.code=code;throw e;};
   const hash=value=>{let h=2166136261;for(const c of JSON.stringify(value))h=Math.imul(h^c.charCodeAt(0),16777619)>>>0;return h.toString(16);};
   const hashText=(h,text)=>{for(const c of text)h=Math.imul(h^c.charCodeAt(0),16777619)>>>0;return h;};
@@ -10,7 +10,7 @@ export function createCatalogTraversal(figma, access, registry, captureExampleNo
   }
   function snapshotState(input,page,root,kind,resumeOnly=false) {
     if(!registry?.ready)fail('Возобновляемый обход недоступен до готовности documentchange listener','CATALOG_TRAVERSAL_NOT_READY');
-    const key=input.traversalId,identity=JSON.stringify([input.fileKey,page.id,root.id,kind==='example'?'example':'page']);
+    const key=input.traversalId,identity=JSON.stringify([input.fileKey,page.id,root.id,kind==='example'?'example':'page',...(projection?[projection]:[])]);
     let state=registry.sessions.get(key);
     if(state&&(state.page!==page||state.root!==root||state.identity!==identity||state.generation!==registry.generation))fail('Курсор устарел: область или документ изменились');
     if(!state){
