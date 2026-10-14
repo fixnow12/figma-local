@@ -3,8 +3,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {after} from 'node:test';
 export const syntheticDiagnosticScope={version:1,
-  prewarm:{fileKey:'prewarm-fixture-file',pageId:'100:1'},
-  diagnosticExample:{fileKey:'diagnostic-fixture-file',pageId:'200:1',parentNodeId:'200:4',nodeIds:['200:2','200:3']},
+  prewarm:{fileKey:'fixture-prewarm',pageId:'100:1'},
+  diagnosticExample:{fileKey:'fixture-diagnostic',pageId:'200:1',parentNodeId:'200:4',nodeIds:['200:2','200:3']},
 };
 export function installSyntheticDiagnosticScope(){
   const dir=mkdtempSync(join(tmpdir(),'figma-diagnostic-scope-'));

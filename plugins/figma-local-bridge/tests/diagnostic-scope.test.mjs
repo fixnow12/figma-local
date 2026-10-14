@@ -8,14 +8,14 @@ import {diagnosticExampleSchema,buildDiagnosticExampleCode} from '../src/diagnos
 import {syntheticDiagnosticScope,installSyntheticDiagnosticScope} from './helpers/diagnostic-scope-fixture.mjs';
 const fixture=installSyntheticDiagnosticScope();
 const prewarm={...syntheticDiagnosticScope.prewarm,prewarmId:'cards-prewarm-test'};
-const diagnostic={fileKey:'diagnostic-fixture-file',pageId:'200:1',nodeId:'200:2',traversalId:'diag-chat-test'};
+const diagnostic={fileKey:'fixture-diagnostic',pageId:'200:1',nodeId:'200:2',traversalId:'diag-chat-test'};
 test('configured file, page and node boundaries remain exact',()=>{
   assert.equal(prewarmSchema.safeParse(prewarm).success,true);
   assert.equal(diagnosticExampleSchema.safeParse(diagnostic).success,true);
   for(const field of ['fileKey','pageId'])assert.equal(prewarmSchema.safeParse({...prewarm,[field]:'999:9'}).success,false);
   for(const field of ['fileKey','pageId','nodeId'])assert.equal(diagnosticExampleSchema.safeParse({...diagnostic,[field]:'999:9'}).success,false);
-  assert.match(buildPrewarmCode(prewarm),/prewarm-fixture-file/);
-  assert.match(buildDiagnosticExampleCode(diagnostic),/diagnostic-fixture-file/);
+  assert.match(buildPrewarmCode(prewarm),/fixture-prewarm/);
+  assert.match(buildDiagnosticExampleCode(diagnostic),/fixture-diagnostic/);
 });
 test('missing configuration fails before code generation',()=>{
   process.env.FIGMA_LOCAL_DIAGNOSTIC_SCOPE_FILE=join(fixture.dir,'missing.json');

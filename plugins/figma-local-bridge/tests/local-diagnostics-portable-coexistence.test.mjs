@@ -19,7 +19,7 @@ test('plugin queue preserves independent catalog, prewarm and font registries',a
 
 function diagnosticFixture(){
  const m=createFigmaMock(),page=m.make('PAGE',{id:'200:1'},null),parent=m.make('COMPONENT_SET',{id:'200:4'},page);
- const root=m.make('COMPONENT',{id:'200:2'},parent);m.figma.fileKey='diagnostic-fixture-file';m.figma.root.children=[page];m.figma.currentPage=page;
+ const root=m.make('COMPONENT',{id:'200:2'},parent);m.figma.fileKey='fixture-diagnostic';m.figma.root.children=[page];m.figma.currentPage=page;
  Object.defineProperty(root,'variantProperties',{get(){throw Error('source getter unavailable');}});
  const control={cancelled:false,catalogTraversal:{ready:true,generation:0,sessions:new Map(),invalidated:new Map()}};
  const args={fileKey:m.figma.fileKey,pageId:page.id,nodeId:root.id,traversalId:'diag-chat-merge',limit:100};
@@ -55,6 +55,6 @@ test('local diagnostic and prewarm source boundaries stay exact',()=>{
  assert.equal(diagnosticExampleSchema.safeParse({...args,fileKey:'foreign'}).success,false);
  assert.equal(diagnosticExampleSchema.safeParse({...args,nodeId:'foreign'}).success,false);
  assert.equal(diagnosticExampleSchema.safeParse({...args,includePng:true}).success,false);
- assert.equal(prewarmSchema.safeParse({fileKey:'prewarm-fixture-file',pageId:'100:1',prewarmId:'cards-prewarm-merge'}).success,true);
+ assert.equal(prewarmSchema.safeParse({fileKey:'fixture-prewarm',pageId:'100:1',prewarmId:'cards-prewarm-merge'}).success,true);
  assert.equal(prewarmSchema.safeParse({fileKey:'foreign',pageId:'100:1',prewarmId:'cards-prewarm-merge'}).success,false);
 });
