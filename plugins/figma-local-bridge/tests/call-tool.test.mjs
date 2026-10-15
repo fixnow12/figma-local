@@ -47,6 +47,21 @@ test('typed client help works without reading configuration or starting MCP',()=
  const result=spawnSync(process.execPath,['scripts/call-tool.mjs','--help','--plugin-root','/nonexistent/bridge-test'],{encoding:'utf8',timeout:5000});
  assert.equal(result.status,0);assert.match(result.stdout,/--args FILE/);assert.match(result.stdout,/--output DIR/);assert.match(result.stdout,/inspect_selection/);assert.equal(result.stderr,'');
 });
+test('saved response is decoded offline without starting a configured server or replaying',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'bridge-saved-result-'));
+ try{
+  const path=join(root,'response.json');
+  await writeFile(path,JSON.stringify({content:[
+   {type:'text',text:JSON.stringify({error:'saved failure',operationStatus:'unknown'})},
+   {type:'text',text:'Diagnostic only'},
+  ]}));
+  const result=spawnSync(process.execPath,['scripts/call-tool.mjs','--read-response',path,'--plugin-root','/nonexistent/bridge-test'],{encoding:'utf8',timeout:5000});
+  assert.equal(result.status,1);
+  const decoded=JSON.parse(result.stdout);
+  assert.equal(decoded.isError,true);assert.equal(decoded.error,'saved failure');assert.equal(decoded.payload.operationStatus,'unknown');
+  assert.equal(result.stderr,'');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
 test('typed client rejects ignored positional JSON before configuration or transport',()=>{
  for(const tail of [['inspect_selection','{"nodeId":"1:2"}'],['inspect_selection','unexpected'],['list','inspect_selection','extra']]){
   const result=spawnSync(process.execPath,['scripts/call-tool.mjs',...tail,'--plugin-root','/nonexistent/bridge-test'],{encoding:'utf8',timeout:5000});

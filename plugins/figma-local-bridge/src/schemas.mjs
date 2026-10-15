@@ -353,6 +353,11 @@ export const screenSpecSchema = screenSpecBaseSchema.superRefine((spec, context)
   const nodesByKey = new Map(spec.nodes.map((node) => [node.key, node]));
   const parents = new Map(spec.nodes.map((node) => [node.key, node.parentKey || spec.key]));
   for (const [index, node] of spec.nodes.entries()) {
+    if (node.type !== 'text' && node.layout?.direction === 'none') {
+      for (const axis of ['width', 'height']) if (node[axis] === 'hug') {
+        context.addIssue({code:z.ZodIssueCode.custom,path:['nodes',index,axis],message:'Hug требует Auto Layout или TEXT; для layout.direction:none задайте числовой размер'});
+      }
+    }
     if (node.parentKey && node.parentKey !== spec.key && !nodeKeys.has(node.parentKey)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

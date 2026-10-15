@@ -3837,8 +3837,8 @@ figma.ui.onmessage = async (msg) => {
       var format = msg.format || 'PNG';
       var scale = msg.scale || 1;
 
-      // AI vision cap: Claude API resizes images to 1568px on the longest side
-      // before processing, so exporting larger just wastes bandwidth and tokens.
+      // Bridge export cap, independent of any model's current image limits.
+      // A capped overview does not replace detailed per-screen inspection.
       var AI_MAX_DIMENSION = 1568;
       var nodeWidth = 0;
       var nodeHeight = 0;
@@ -3924,7 +3924,8 @@ figma.ui.onmessage = async (msg) => {
       // Scale capping advice
       if (scale < (msg.scale || 1)) {
         adviceParts.push('Scale capped from ' + (msg.scale || 1) + 'x to ' +
-          scale.toFixed(2) + 'x (AI vision max: 1568px).');
+          scale.toFixed(2) + 'x (Bridge export cap: 1568px).');
+        adviceParts.push('Overview only: inspect each screen and critical CTA by nodeId separately. Geometry checks do not establish visual acceptance.');
       }
 
       // Scope advice for full-page captures with heavy downscaling
@@ -3962,6 +3963,11 @@ figma.ui.onmessage = async (msg) => {
           base64: base64,
           format: format,
           scale: scale,
+          requestedScale: msg.scale || 1,
+          effectiveScale: scale,
+          maxDimension: AI_MAX_DIMENSION,
+          capped: scale < (msg.scale || 1),
+          sourceSize: { width: nodeWidth, height: nodeHeight },
           byteLength: bytes.length,
           node: {
             id: node.id,
