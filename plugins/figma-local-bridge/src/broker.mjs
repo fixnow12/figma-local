@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {reconcileMutationSchema,mutationReadTarget,buildMutationReadbackCode} from './mutation-reconciliation.mjs';
 import { OperationJournal } from './operation-journal.mjs';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { errorDetails } from './bridge-errors.mjs';
@@ -133,6 +134,32 @@ export async function startBroker({ directory = installationDirectory(), port = 
     });
   }
 
+  async function reconcileMutation(session,input) {
+    const saved=journal.get(input.fileKey,input.operationId);
+    if(!['render_screen','patch_nodes'].includes(saved.name))throw Object.assign(Error('Требуется render/patch'),{code:'MUTATION_RECONCILIATION_SCOPE_REJECTED',operationStatus:'not_applied',commandSent:false});
+    if(saved.argsHash!==input.argsHash)throw Object.assign(Error('Хеш исходной записи не совпадает'),{code:'OPERATION_ARGUMENTS_MISMATCH',operationStatus:'not_applied',commandSent:false});
+    if(saved.settled)return {operationStatus:'read',operation:saved};
+    const record=journal.getReconcileMutation(input);
+    const reject=message=>{throw Object.assign(Error(message),{code:'MUTATION_RECONCILIATION_PROOF_REJECTED',operationStatus:'not_applied',commandSent:false,operationId:record.operationId});};
+    return runForFile(session,input.fileKey,async()=>{
+      const socket=bridge.wsServer.clients.get(input.fileKey)?.ws;
+      const assertConnection=()=>{
+        const file=bridge.wsServer.clients.get(input.fileKey);
+        if(restarting||!isRuntimeCurrent()||!socket||socket.readyState!==1||file?.ws!==socket||connectionId(socket)!==record.connectionId||file.fileInfo.pluginBuild!==pluginRevision())
+          reject('Нужно исходное живое подключение той же текущей сборки; другой runtime не доказывает завершение');
+      };
+      const assertIdle=s=>{if(s?.fileKey!==input.fileKey||s.responsive!==true||s.busy!==false||s.pendingExecutions!==0||s.activeOperation!==null)reject('Исходный Plugin API ещё не подтвердил завершение кода');};
+      assertConnection();const before=await bridge.executionStatus(input.fileKey);assertConnection();assertIdle(before);
+      const read=await bridge.execute(buildMutationReadbackCode(mutationReadTarget(record)),{fileKey:input.fileKey,timeout:10000,expectedSocket:socket,operation:{name:'reconcile_mutation_readback',mutating:false}});
+      assertConnection();if(read?.fileContext?.fileKey!==input.fileKey)reject('Прочитан другой файл');
+      const after=await bridge.executionStatus(input.fileKey);assertConnection();assertIdle(after);
+      const current=journal.get(input.fileKey,input.operationId);
+      const operation=current.settled?current:journal.reconcileMutation(input,{connectionId:record.connectionId,before,after,readback:read.result});
+      uncertainFiles.delete(input.fileKey);
+      return {operationStatus:'read',operation};
+    });
+  }
+
   function release(session) {
     if (!session.closed || session.pending) return;
     sessions.delete(session);
@@ -155,6 +182,10 @@ export async function startBroker({ directory = installationDirectory(), port = 
             let result;
             if (message.method === 'status') result = maintenanceStatus();
             else if (message.method === 'operationStatus') result = {operationStatus:'read', operation: journal.get(message.args?.fileKey,message.args?.operationId)};
+            else if(message.method==='reconcileMutation'){
+              const input=reconcileMutationSchema.parse(message.args);fileOperation=true;activeOperations++;
+              result=await reconcileMutation(session,input);
+            }
             else if (message.method === 'recoverComponentDryRun') {
               const input=recoverComponentDryRunSchema.parse(message.args);
               fileOperation=true;activeOperations++;
@@ -208,8 +239,15 @@ export async function startBroker({ directory = installationDirectory(), port = 
                     }
                     return value;
                   } catch(error) {
-                    if(record) { journal.mark(record.operationId,{error:{message:error.message,code:error.code,operationStatus:error.operationStatus,rollbackErrors:error.rollbackErrors}}); const current=journal.get(fileKey,record.operationId); if(!current.settled) journal.mark(record.operationId,error.operationStatus==='not_applied'?{state:'failed',settled:true,operationStatus:'not_applied',code:error.code||'OPERATION_NOT_SENT'}:{state:'unknown',operationStatus:'unknown'});
-                      Object.assign(error,{operationId:record.operationId,argsHash:record.argsHash,stage:current.stage,commandSent:true,originalErrorCode:error.code||'OPERATION_UNKNOWN'}); }
+                    if(record) {
+                      const current=journal.get(fileKey,record.operationId);
+                      const detail={message:error.message,code:error.code||'OPERATION_FAILED',operationStatus:error.operationStatus,rollbackErrors:error.rollbackErrors};
+                      if(current.settled)journal.mark(record.operationId,{transportError:detail});
+                      else journal.mark(record.operationId,{error:detail,...(error.operationStatus==='not_applied'
+                        ? {state:'failed',settled:true,operationStatus:'not_applied',code:detail.code}
+                        : {state:'unknown',operationStatus:'unknown'})});
+                      Object.assign(error,{operationId:record.operationId,argsHash:record.argsHash,stage:current.stage,commandSent:true,originalErrorCode:error.code||'OPERATION_UNKNOWN'});
+                    }
                     throw error;
                   }
                 });

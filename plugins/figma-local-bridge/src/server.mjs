@@ -1,3 +1,4 @@
+import {reconcileMutationInputSchema,reconcileMutationSchema} from './mutation-reconciliation.mjs';
 import{prewarmInputSchema,prewarmSchema,buildPrewarmCode}from'./catalog-prewarm.mjs';
 import {readNodeScopeInputSchema,readNodeScopeSchema,buildReadNodeScopeCode} from './node-scope.mjs';
 import {readTextStyleInputSchema,readTextStyleSchema,buildReadTextStyleCode} from './read-text-style.mjs';
@@ -377,6 +378,17 @@ server.registerTool('get_operation_status', {
  annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true},
 },async input=>{try{if(typeof bridge.operationStatus!=='function')throw Object.assign(Error('Журнал доступен только через broker'),{code:'OPERATION_JOURNAL_UNAVAILABLE',operationStatus:'not_applied',commandSent:false});return ok(await bridge.operationStatus(input));}catch(error){return fail(error);}});
 
+
+server.registerTool('reconcile_mutation', {
+ title:'Сверить завершившуюся запись без receipt',
+ description:'Только unknown render_screen/patch_nodes на исходном живом подключении. Broker доказывает idle до/после полного чтения ID/ключей, сохраняет unknown и исходный журнал, снимает блокировку выполнения. Не повторяет запись и не подтверждает applied/правильность макета. Другой runtime, busy и неполное чтение отклоняются. Затем прочитайте затронутые узлы и планируйте только отсутствующее.',
+ inputSchema:reconcileMutationInputSchema,annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true},
+},async input=>{try{
+ const parsed=reconcileMutationSchema.parse(input);
+ if(runtimeInfo.revision!==sourceRevision())throw Object.assign(Error('MCP устарел'),{code:'MCP_OUTDATED',operationStatus:'not_applied',commandSent:false});
+ if(typeof bridge.reconcileMutation!=='function')throw Object.assign(Error('Reconciliation доступна только через broker'),{code:'OPERATION_JOURNAL_UNAVAILABLE',operationStatus:'not_applied',commandSent:false});
+ return ok(await bridge.reconcileMutation(parsed));
+}catch(error){return fail(error);}});
 
 server.registerTool('recover_component_dry_run', {
  title:'Завершить блокировку отключённого dryRun компонента',

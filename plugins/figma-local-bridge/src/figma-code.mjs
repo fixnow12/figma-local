@@ -533,9 +533,12 @@ async function build(item, parent, buildOptions = {}) {
 try {
   const destination = options.parentId ? await figma.getNodeByIdAsync(options.parentId) : operationPage;
   if (!destination || !["PAGE", "FRAME", "SECTION"].includes(destination.type)) throw new Error("parentId requires PAGE, FRAME or SECTION");
-  let destinationPage = destination;
-  while (destinationPage && destinationPage.type !== "PAGE") destinationPage = destinationPage.parent;
-  if (destinationPage !== operationPage) throw new Error("parentId must belong to the active page");
+  function assertDestination() {
+    let destinationPage = destination;
+    while (destinationPage && !destinationPage.removed && destinationPage.type !== "PAGE") destinationPage = destinationPage.parent;
+    if (destination.removed || destinationPage !== operationPage || figma.currentPage !== operationPage) throw new Error("parentId must belong to the active page");
+  }
+  assertDestination();
   const existing = findByKey(spec.key);
   if (options.parentId && existing && existing.parent !== destination && existing.parent?.parent !== destination) throw new Error("Existing key belongs to another destination");
   if (existing && !options.replace) {
@@ -544,11 +547,13 @@ try {
   await prepareFonts(spec);
   checkOperation();
   if (figma.currentPage !== operationPage) throw new Error("Страница изменилась во время проверки");
+  assertDestination();
   if (options.dryRun) return { ready: true };
 
   createdSection = destination.type === "FRAME" ? figma.createFrame() : figma.createSection();
   created.push(createdSection);
   destination.appendChild(createdSection);
+  if (options.position && destination.type === "FRAME" && destination.layoutMode !== "NONE") createdSection.layoutPositioning = "ABSOLUTE";
   createdSection.name = options.sectionName || spec.name;
   createdSection.setPluginData(DATA_KEY, "section:" + spec.key);
   const existingSection = ["SECTION", "FRAME"].includes(existing?.parent?.type) && existing.parent.getPluginData?.(DATA_KEY) === "section:" + spec.key ? existing.parent : null;
@@ -586,6 +591,8 @@ try {
   // Internal reconstruction finalization belongs to the same rollback boundary.
   ${finalizeCode}
   checkOperation();
+  assertDestination();
+  if (createdSection.parent !== destination || root.parent !== createdSection) throw new Error("Render placement changed during construction");
   const result = {
     rootId: root.id,
     sectionId: createdSection.id,
@@ -609,7 +616,9 @@ try {
     figma.viewport.scrollAndZoomIntoView([createdSection]);
   }
 
+  assertDestination();
   if (existing) {
+    if (existing.removed || (options.parentId && existing.parent !== destination && existing.parent?.parent !== destination)) throw new Error("Existing replacement target moved during construction");
     const oldParent = existing.parent;
     if (["SECTION", "FRAME"].includes(oldParent?.type) && oldParent.children.length === 1 && oldParent.getPluginData?.(DATA_KEY) === "section:" + spec.key) {
       oldParent.remove();

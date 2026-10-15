@@ -318,3 +318,17 @@ for(const name of ['render_screen','patch_nodes']) test(`${name}: real broker sa
  const next=client.execute('intentional edit',{...options,operation:{...options.operation,operationInput:{...options.operation.operationInput,operationId:'dddddddd-dddd-4ddd-addd-dddddddddddd'}}});
  await until(()=>calls.length===2);calls[1].resolve({result:{rootId:'1:2'}});await next;
 });
+
+test('terminal not_applied response without explicit code ACKs matching late error receipt',async t=>{
+ const {calls,clients:[client],broker}=await fixture(t),acks=[];
+ const socket={readyState:1,close(){},terminate(){},send(value){acks.push(JSON.parse(value));}};
+ broker.bridge.wsServer.clients.set('a',{ws:socket,fileInfo:{fileKey:'a'}});broker.bridge.wsServer.socketKeys.set(socket,'a');
+ const request=client.execute('write',{fileKey:'a',operation:{name:'patch_nodes',mutating:true,operationInput:{fileKey:'a',patches:[]}}});
+ const rejected=assert.rejects(request,{operationStatus:'not_applied'});await until(()=>calls.length===1);
+ const meta=calls[0].options.operation.journal;
+ calls[0].reject(Object.assign(Error('preflight failed'),{operationStatus:'not_applied'}));await rejected;
+ broker.bridge.wsServer.onOperationEvent(socket,{...meta,sequence:1,stage:'settled',success:false,code:'OPERATION_FAILED',operationStatus:'not_applied',error:'late error'});
+ assert.equal(acks.at(-1).type,'OPERATION_JOURNAL_ACK');
+ const saved=(await client.operationStatus({fileKey:'a',operationId:meta.operationId})).operation;
+ assert.equal(saved.operationStatus,'not_applied');assert.equal(saved.error.message,'preflight failed');
+});

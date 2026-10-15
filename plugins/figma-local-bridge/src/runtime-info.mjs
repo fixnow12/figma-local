@@ -16,7 +16,7 @@ export function pluginRevision() {
 // Broker only loads these modules. Canvas command builders and MCP schemas are
 // evaluated in the MCP process; changing them must not restart other sessions.
 export function brokerRevision() {
-  return digest(['operation-journal.mjs', 'component-dry-run-recovery.mjs', 'bridge-errors.mjs', 'bridge.mjs', 'broker.mjs', 'installation.mjs', 'runtime-info.mjs', 'secure-channel.cjs']);
+  return digest(['operation-journal.mjs', 'mutation-reconciliation.mjs', 'component-dry-run-recovery.mjs', 'bridge-errors.mjs', 'bridge.mjs', 'broker.mjs', 'installation.mjs', 'runtime-info.mjs', 'secure-channel.cjs']);
 }
 // Snapshot at process start: reading only the files on disk would hide a stale process.
 export const runtimeInfo = { revision: sourceRevision(), brokerRevision: brokerRevision(), startedAt: new Date().toISOString() };
@@ -50,7 +50,7 @@ export function runtimeDiagnostics(status, { fileKey } = {}) {
   const state = issues[0]?.code || (ready ? 'READY' : 'FILE_NOT_CONNECTED');
   const nextAction = issues[0]?.action || (ready ? 'continue' : 'open_figma_plugin');
   return { ready, state, nextAction, current, issues, mcp: runtimeInfo, sourceRevision: revision,
-    capabilities: ready && fileKey && status.execution?.some(item => item.fileKey === fileKey && item.responsive === true && !item.busy) ? [...(status.operationJournal === true ? ["operation-journal-v1", "mutation-receipts-v1", "render-target-parent-v1"] : []), "text-lists-v1", "glass-effects-v1", "vector-properties-v1", "text-range-variables-v1", "navigate-scroll-default-v1", "instance-scale-v1", "node-variable-modes-v1", "nested-component-swaps-v1", "component-set-import-v1", "page-transfer-v1"] : [],
+    capabilities: ready && fileKey && status.execution?.some(item => item.fileKey === fileKey && item.responsive === true && !item.busy) ? [...(status.operationJournal === true ? ["operation-journal-v1", "mutation-receipts-v1", "mutation-reconciliation-v1", "render-target-parent-v1"] : []), "text-lists-v1", "glass-effects-v1", "vector-properties-v1", "text-range-variables-v1", "navigate-scroll-default-v1", "instance-scale-v1", "node-variable-modes-v1", "nested-component-swaps-v1", "component-set-import-v1", "page-transfer-v1"] : [],
     capabilityFileKey: fileKey || null,
     expectedBrokerRevision: expectedBroker, expectedPluginBuild: expectedPlugin, warnings: issues.map(issue => issue.message),
     activityNote: 'isActive — последнее событие файла, а не проверка активной вкладки или готовности Plugin API.' };
