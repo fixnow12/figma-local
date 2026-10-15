@@ -6,19 +6,29 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { decodeToolResult } from '../src/client-result.mjs';
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
   'plugin-root': { type: 'string' }, args: { type: 'string' }, output: { type: 'string' }, help: { type: 'boolean', short: 'h' },
+  'read-response': { type: 'string' },
 } });
 if (values.help) {
   console.log(`Typed Bridge client (no direct canvas execution)
 Usage: node scripts/call-tool.mjs TOOL --args FILE --output DIR
        node scripts/call-tool.mjs list [TOOL]
+       node scripts/call-tool.mjs --read-response response.json (offline; no replay)
+       node scripts/tool-help.mjs TOOL [--schema | --validate FILE] (offline)
 Options: --plugin-root DIR, --help (-h)
 Example: node scripts/call-tool.mjs inspect_selection --args inspect.json --output ./inspection
 inspect.json: {"fileKey":"TARGET_FILE","nodeId":"1:2","depth":2,"detail":"full"}
 Arguments are read from --args FILE. Positional JSON is not supported.`);
   process.exit(0);
+}
+if (values['read-response']) {
+  if (positionals.length || values.args || values.output) throw new Error('--read-response cannot be combined with a tool, --args or --output');
+  const decoded = decodeToolResult(JSON.parse(await readFile(resolve(values['read-response']), 'utf8')));
+  console.log(JSON.stringify(decoded, null, 2));
+  process.exit(decoded.isError ? 1 : 0);
 }
 const maximumPositionals = positionals[0] === 'list' ? 2 : 1;
 if (positionals.length > maximumPositionals) {
@@ -52,14 +62,9 @@ try {
     // Never retry calls: a timeout does not prove that a mutation was not applied.
     const response = await client.callTool({ name, arguments: args }, undefined, { timeout: 150000 });
     outcome.responseReceived = true;
-    outcome.isError = !!response.isError;
-    outcome.exitCode = response.isError ? 1 : 0;
-    const texts = (response.content || []).filter(item => item.type === 'text').map(item => item.text);
-    let payload = response.structuredContent;
-    if (payload === undefined) {
-      payload = texts;
-      if (texts.length === 1) { try { payload = JSON.parse(texts[0]); } catch {} }
-    }
+    const { payload, isError, error: resultError } = decodeToolResult(response);
+    outcome.isError = isError;
+    outcome.exitCode = isError ? 1 : 0;
     if (values.output) {
       const output = resolve(values.output);
       await mkdir(output, { recursive: true });
@@ -71,11 +76,12 @@ try {
         await writeFile(path, Buffer.from(item.data, 'base64'));
         console.log(JSON.stringify({ image: path }));
       }
-      console.log(JSON.stringify({ result: resolve(output, 'result.json'), isError: !!response.isError,
+      console.log(JSON.stringify({ result: resolve(output, 'result.json'), isError,
         operationStatus: payload?.operationStatus, rootId: payload?.result?.rootId,
-        verification: payload?.result?.verification, error: payload?.error, ready: payload?.ready }));
+        verification: payload?.result?.verification, error: resultError, ready: payload?.ready,
+        ...(isError ? { nextStep: 'Read response.json/result.json and diagnose; never replay a mutation to reveal its error.' } : {}) }));
     } else console.log(JSON.stringify(payload, null, 2));
-    if (response.isError) process.exitCode = 1;
+    if (isError) process.exitCode = 1;
   }
  } catch (error) {
   outcome.exitCode = 1;

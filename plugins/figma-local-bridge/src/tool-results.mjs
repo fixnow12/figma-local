@@ -42,7 +42,17 @@ export function toolFailure(error, timing) {
     ...errorDetails(error),
     ...(timing ? { timings: timing.snapshot() } : {}),
   };
-  return { isError: true, content: [{ type: "text", text: validation ? payload.error : JSON.stringify(payload) }], structuredContent: payload };
+  // Preserve the JSON-first wire contract for existing clients; also expose a
+  // plain-text diagnostic to clients/models that hide nested JSON errors.
+  const diagnostic = [payload.error, payload.code && `code: ${payload.code}`,
+    payload.operationStatus && `operationStatus: ${payload.operationStatus}`,
+    payload.nextStep,
+    ['unknown', 'partial'].includes(payload.operationStatus) && 'Не повторяйте мутацию. Сохраните ответ и прочитайте состояние затронутых узлов.',
+  ].filter(Boolean).join('\n');
+  return { isError: true, content: [
+    { type: 'text', text: validation ? payload.error : JSON.stringify(payload) },
+    ...(!validation ? [{ type: 'text', text: diagnostic }] : []),
+  ], structuredContent: payload };
 }
 
 // Keep journal metadata construction separate from target/preview execution.
