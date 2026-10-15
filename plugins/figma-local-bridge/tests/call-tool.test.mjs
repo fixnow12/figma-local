@@ -68,3 +68,53 @@ test('typed client rejects ignored positional JSON before configuration or trans
   assert.equal(result.status,1);assert.match(result.stderr,/use --args FILE/);assert.doesNotMatch(result.stderr,/ENOENT|no such file/);
  }
 });
+
+test('CLI refuses runner replay before dispatch and preserves existing receipt files',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'bridge-replay-'));
+ try{
+ const sdk=resolve('node_modules/@modelcontextprotocol/sdk/dist/esm');
+ const server=join(root,'server.mjs');
+ await writeFile(server,`import {McpServer} from ${JSON.stringify('file://'+sdk+'/server/mcp.js')};\nimport {StdioServerTransport} from ${JSON.stringify('file://'+sdk+'/server/stdio.js')};\nconst s=new McpServer({name:'fixture',version:'1'});s.registerTool('fixture',{annotations:{readOnlyHint:false}},async()=>({content:[{type:'text',text:'{}'}]}));await s.connect(new StdioServerTransport());`);
+ await writeFile(join(root,'.mcp.json'),JSON.stringify({mcpServers:{'figma-local':{command:process.execPath,args:[server]}}}));
+ const output=join(root,'out'),cmd=['scripts/call-tool.mjs','fixture','--plugin-root',root,'--output',output];
+ const first=spawnSync(process.execPath,cmd,{encoding:'utf8',timeout:15000});assert.equal(first.status,0,first.stderr);
+ const saved=await Promise.all(['request.json','response.json','transport.json'].map(f=>readFile(join(output,f),'utf8')));
+ const second=spawnSync(process.execPath,cmd,{encoding:'utf8',timeout:15000});assert.equal(second.status,1);assert.match(second.stderr,/EEXIST/);
+ assert.deepEqual(await Promise.all(['request.json','response.json','transport.json'].map(f=>readFile(join(output,f),'utf8'))),saved);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+async function evidenceFixture(root) {
+ const sdk=resolve('node_modules/@modelcontextprotocol/sdk/dist/esm'),server=join(root,'server.mjs');
+ await writeFile(server,`import {McpServer} from ${JSON.stringify('file://'+sdk+'/server/mcp.js')};import {StdioServerTransport} from ${JSON.stringify('file://'+sdk+'/server/stdio.js')};const s=new McpServer({name:'fixture',version:'1'});s.registerTool('fixture',{annotations:{readOnlyHint:false}},async()=>({content:[{type:'text',text:JSON.stringify({operationStatus:'applied',result:{rootId:'1:2',body:'BIG_SECRET'.repeat(100000)}})},{type:'image',mimeType:'image/png',data:'aGVsbG8='}]}));s.registerTool('inspect_selection',{annotations:{readOnlyHint:true}},async()=>({content:[{type:'text',text:'{}'}]}));await s.connect(new StdioServerTransport());`);
+ await writeFile(join(root,'.mcp.json'),JSON.stringify({mcpServers:{'figma-local':{command:process.execPath,args:[server]}}}));
+}
+test('read-only CLI cannot replace mutation evidence; explicit PNGs are created privately',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'bridge-read-overwrite-'));
+ try{
+ await evidenceFixture(root);
+ const output=join(root,'out'),base=['--plugin-root',root,'--output',output];
+ const first=spawnSync(process.execPath,['scripts/call-tool.mjs','fixture',...base],{encoding:'utf8',timeout:15000});assert.equal(first.status,0,first.stderr);
+ const files=['request.json','response.json','result.json','transport.json','preview-0.png'];
+ const saved=await Promise.all(files.map(f=>readFile(join(output,f))));
+ const read=spawnSync(process.execPath,['scripts/call-tool.mjs','inspect_selection',...base],{encoding:'utf8',timeout:15000});
+ assert.equal(read.status,1);assert.match(read.stderr,/EEXIST/);
+ assert.deepEqual(await Promise.all(files.map(f=>readFile(join(output,f)))),saved);
+ if(process.platform!=='win32'){
+ const {stat}=await import('node:fs/promises');assert.equal((await stat(output)).mode&0o777,0o700);
+ for(const file of files)assert.equal((await stat(join(output,file))).mode&0o777,0o600);
+ }
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test('default CLI keeps compact state receipts, no heavy payload/PNG; stdout stays complete',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'bridge-default-evidence-'));
+ try{
+ await evidenceFixture(root);const state=join(root,'state');
+ const result=spawnSync(process.execPath,['scripts/call-tool.mjs','fixture','--plugin-root',root],{encoding:'utf8',timeout:15000,maxBuffer:3000000,env:{...process.env,FIGMA_LOCAL_EVIDENCE_DIR:state}});
+ assert.equal(result.status,0,result.stderr);assert.ok(JSON.parse(result.stdout).result.body.length>100000);
+ const {readdir}=await import('node:fs/promises'),dirs=await readdir(state);assert.equal(dirs.length,1);
+ const output=join(state,dirs[0]);assert.deepEqual((await readdir(output)).sort(),['request.json','response.json','result.json','transport.json']);
+ for(const f of ['request.json','response.json','result.json']){const content=await readFile(join(output,f),'utf8');assert.ok(content.length<4096);assert.doesNotMatch(content,/BIG_SECRET/);}
+ const read=spawnSync(process.execPath,['scripts/call-tool.mjs','--read-response',join(output,'response.json')],{encoding:'utf8',timeout:5000});assert.equal(read.status,0);assert.equal(JSON.parse(read.stdout).payload.compact,true);
+ }finally{await rm(root,{recursive:true,force:true});}
+});

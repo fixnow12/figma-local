@@ -548,6 +548,8 @@ export function adaptPublicScreenSpec(spec) {
 }
 
 export const renderScreenInputSchema = {
+  operationId: z.string().uuid().optional().describe("UUID запроса: повтор того же ID не отправляет запись снова; новая намеренная правка требует нового ID."),
+  parentId: z.string().min(1).max(160).optional().describe("Существующий PAGE, FRAME или SECTION на активной странице. Без поля используется текущая PAGE. Под FRAME создаётся FRAME-обёртка, иначе SECTION."),
   spec: screenSpecPublicSchema,
   dryRun: z.boolean().optional().describe("Проверить спецификацию, свойства и загрузку шрифтов без создания узлов. Не проверяет итоговый рендер SVG, клики или визуальное совпадение."),
   replace: z.boolean().optional(),
@@ -617,6 +619,7 @@ const patchSetSchema = z
   .refine((value) => Object.keys(value).length > 0, "Патч не должен быть пустым");
 
 export const patchNodesInputSchema = {
+  operationId: z.string().uuid().optional(),
   patches: z
     .array(
       z

@@ -1,11 +1,13 @@
 // A typed MCP client for local diagnostics and clients with a stale tool catalog.
 // It connects to the same server as the plugin; no direct canvas execution.
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import {claimEvidence,writeEvidence,compactReceipt} from '../src/call-evidence.mjs';
 import { decodeToolResult } from '../src/client-result.mjs';
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
@@ -35,6 +37,7 @@ if (positionals.length > maximumPositionals) {
   console.error(JSON.stringify({error:'Unexpected positional arguments; use --args FILE for tool arguments. Listing accepts only: list [TOOL].',responseReceived:false}));
   process.exit(1);
 }
+const explicitOutput = Boolean(values.output);
 const pluginRoot = resolve(values['plugin-root'] || resolve(dirname(fileURLToPath(import.meta.url)), '..'));
 const config = JSON.parse(await readFile(resolve(pluginRoot, '.mcp.json'), 'utf8')).mcpServers['figma-local'];
 const client = new Client({ name: 'figma-local-tool-client', version: '1.0.0' });
@@ -46,41 +49,51 @@ const sanitize = text => String(text)
   .replace(/((?:[\w-]*(?:token|secret|password|api[_-]?key)[\w-]*)["']?\s*[:=]\s*["']?)[^\s"',;]+/gi, '$1[REDACTED]')
   .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi, '$1[REDACTED]@');
 let stderr = '';
+let evidence;
 const outcome = { responseReceived: false, isError: null, exitCode: 0, error: null };
 transport.stderr?.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-16384); });
 try {
+  const name=positionals[0];
+  const args=values.args?JSON.parse(await readFile(resolve(values.args),'utf8')):{};
+  if(name && name!=='list') {
+    if(['render_screen','patch_nodes'].includes(name)&&args.dryRun!==true)args.operationId ||= randomUUID();
+    evidence=await claimEvidence({output:values.output,tool:name,args,inputPath:values.args});
+    console.error(JSON.stringify({evidence:evidence.directory,operationId:args.operationId,
+      compact:evidence.automatic,nextStep:'Read saved response.json; after timeout read get_operation_status and affected nodes. Do not replay this runner.'}));
+  }
   await client.connect(transport, { timeout: 10000 });
   const { tools } = await client.listTools();
-  const name = positionals[0];
   if (!name || name === 'list') {
     const selected = positionals[1] ? tools.filter(tool => tool.name === positionals[1]) : tools;
     if (!selected.length) throw new Error(`Инструмент ${positionals[1]} отсутствует в ${pluginRoot}`);
     console.log(JSON.stringify(selected, null, 2));
   } else {
     if (!tools.some(tool => tool.name === name)) throw new Error(`Инструмент ${name} отсутствует в ${pluginRoot}`);
-    const args = values.args ? JSON.parse(await readFile(resolve(values.args), 'utf8')) : {};
     // Never retry calls: a timeout does not prove that a mutation was not applied.
     const response = await client.callTool({ name, arguments: args }, undefined, { timeout: 150000 });
     outcome.responseReceived = true;
     const { payload, isError, error: resultError } = decodeToolResult(response);
     outcome.isError = isError;
     outcome.exitCode = isError ? 1 : 0;
-    if (values.output) {
-      const output = resolve(values.output);
-      await mkdir(output, { recursive: true });
-      await writeFile(resolve(output, 'response.json'), JSON.stringify(response, null, 2));
-      await writeFile(resolve(output, 'result.json'), JSON.stringify(payload, null, 2));
-      let index = 0;
-      for (const item of response.content || []) if (item.type === 'image' && item.mimeType === 'image/png') {
-        const path = resolve(output, `preview-${index++}.png`);
-        await writeFile(path, Buffer.from(item.data, 'base64'));
-        console.log(JSON.stringify({ image: path }));
+    if (evidence) {
+      const output=evidence.directory;
+      const savedPayload=evidence.automatic?compactReceipt(payload):payload;
+      const savedResponse=evidence.automatic?{isError,structuredContent:savedPayload,content:[]}:response;
+      await writeEvidence(resolve(output,'response.json'),JSON.stringify(savedResponse,null,2));
+      await writeEvidence(resolve(output,'result.json'),JSON.stringify(savedPayload,null,2));
+      if (!evidence.automatic) {
+        let index=0;
+        for(const item of response.content||[])if(item.type==='image'&&item.mimeType==='image/png'){
+          const path=resolve(output,`preview-${index++}.png`);
+          await writeEvidence(path,Buffer.from(item.data,'base64'));
+          console.log(JSON.stringify({image:path}));
+        }
       }
-      console.log(JSON.stringify({ result: resolve(output, 'result.json'), isError,
-        operationStatus: payload?.operationStatus, rootId: payload?.result?.rootId,
-        verification: payload?.result?.verification, error: resultError, ready: payload?.ready,
-        ...(isError ? { nextStep: 'Read response.json/result.json and diagnose; never replay a mutation to reveal its error.' } : {}) }));
-    } else console.log(JSON.stringify(payload, null, 2));
+      if(explicitOutput)console.log(JSON.stringify({result:resolve(output,'result.json'),isError,
+        operationStatus:payload?.operationStatus,rootId:payload?.result?.rootId,error:resultError,verification:payload?.result?.verification,ready:payload?.ready,
+        nextStep:'Read saved response.json/result.json; never replay a mutation to reveal its error.'}));
+      else console.log(JSON.stringify(payload,null,2));
+    } else console.log(JSON.stringify(payload,null,2));
     if (isError) process.exitCode = 1;
   }
  } catch (error) {
@@ -94,11 +107,9 @@ try {
     outcome.error ||= sanitize(error.message || error).slice(0, 2048);
     process.exitCode = 1;
   }
-  if (values.output) {
-    const output = resolve(values.output);
-    await mkdir(output, { recursive: true });
+  if (evidence) {
     // A clipped first line may start halfway through a credential; discard it.
-    const bounded = stderr.length >= 16384 ? (stderr.includes('\n') ? stderr.slice(stderr.indexOf('\n') + 1) : '') : stderr;
-    await writeFile(resolve(output, 'transport.json'), JSON.stringify({ ...outcome, stderr: sanitize(bounded).slice(-8192) }, null, 2));
+    const bounded=stderr.length>=16384?(stderr.includes('\n')?stderr.slice(stderr.indexOf('\n')+1):''):stderr;
+    await writeEvidence(resolve(evidence.directory,'transport.json'),JSON.stringify({...outcome,stderr:sanitize(bounded).slice(-8192)},null,2));
   }
 }

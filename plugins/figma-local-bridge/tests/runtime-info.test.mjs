@@ -55,7 +55,7 @@ test('обновление файлов на диске не маскирует 
   t.after(() => rm(directory, { recursive: true, force: true }));
   await mkdir(join(directory, 'figma-plugin'));
   await copyFile(new URL('../src/runtime-info.mjs', import.meta.url), join(directory, 'runtime-info.mjs'));
-  for (const file of ['operation-journal.mjs', 'component-dry-run-recovery.mjs', 'schemas.mjs', 'broker.mjs', 'bridge.mjs', 'bridge-errors.mjs', 'installation.mjs', 'secure-channel.cjs', 'figma-plugin/code.js', 'figma-plugin/ui.html']) {
+  for (const file of ['operation-journal.mjs', 'mutation-reconciliation.mjs', 'component-dry-run-recovery.mjs', 'schemas.mjs', 'broker.mjs', 'bridge.mjs', 'bridge-errors.mjs', 'installation.mjs', 'secure-channel.cjs', 'figma-plugin/code.js', 'figma-plugin/ui.html']) {
     await writeFile(join(directory, file), 'old');
   }
   const runtime = await import(pathToFileURL(join(directory, 'runtime-info.mjs')));

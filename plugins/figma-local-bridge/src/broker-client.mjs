@@ -130,6 +130,7 @@ export class BrokerClient {
   }
   execute(code, options = {}) { return this.call('execute', { ...options, code }); }
   captureScreenshot(nodeId, options = {}) { return this.call('captureScreenshot', { ...options, nodeId }); }
+  reconcileMutation(input) { return this.call('reconcileMutation',input); }
   recoverComponentDryRun(input) { return this.call('recoverComponentDryRun', input); }
   operationStatus(input) { return this.call('operationStatus', input); }
   executionStatus(fileKey) { return this.call('executionStatus', { fileKey }); }

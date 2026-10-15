@@ -143,7 +143,7 @@ test('catalog progress skips PNG until a verified snapshot has an exact screensh
 });
 
 const metadataCases = [
-  { name: 'patch_nodes', input: {}, expected: {} },
+  { name: 'patch_nodes', input: {}, inputField: 'operationInput' },
   { name: 'inspect_node', input: {}, mutating: false, expected: {} },
   { name: 'import_variables', input: {collections: ['fixture']}, inputField: 'importInput' },
   { name: 'use_component', input: {libraryKey: 'fixture'}, inputField: 'operationInput' },
