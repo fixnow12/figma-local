@@ -1,6 +1,7 @@
 // A typed MCP client for local diagnostics and clients with a stale tool catalog.
 // It connects to the same server as the plugin; no direct canvas execution.
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -35,6 +36,8 @@ if (positionals.length > maximumPositionals) {
   console.error(JSON.stringify({error:'Unexpected positional arguments; use --args FILE for tool arguments. Listing accepts only: list [TOOL].',responseReceived:false}));
   process.exit(1);
 }
+const explicitOutput = Boolean(values.output);
+if (positionals[0] && positionals[0] !== 'list') values.output ||= resolve('.tmp-figma', 'calls', randomUUID());
 const pluginRoot = resolve(values['plugin-root'] || resolve(dirname(fileURLToPath(import.meta.url)), '..'));
 const config = JSON.parse(await readFile(resolve(pluginRoot, '.mcp.json'), 'utf8')).mcpServers['figma-local'];
 const client = new Client({ name: 'figma-local-tool-client', version: '1.0.0' });
@@ -46,6 +49,7 @@ const sanitize = text => String(text)
   .replace(/((?:[\w-]*(?:token|secret|password|api[_-]?key)[\w-]*)["']?\s*[:=]\s*["']?)[^\s"',;]+/gi, '$1[REDACTED]')
   .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi, '$1[REDACTED]@');
 let stderr = '';
+let evidenceOwned = false;
 const outcome = { responseReceived: false, isError: null, exitCode: 0, error: null };
 transport.stderr?.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-16384); });
 try {
@@ -59,6 +63,17 @@ try {
   } else {
     if (!tools.some(tool => tool.name === name)) throw new Error(`Инструмент ${name} отсутствует в ${pluginRoot}`);
     const args = values.args ? JSON.parse(await readFile(resolve(values.args), 'utf8')) : {};
+    const tool = tools.find(tool => tool.name === name);
+    const mutating = tool.annotations?.readOnlyHint !== true && args.dryRun !== true;
+    // Persist the request BEFORE dispatch, including when the transport never replies.
+    values.output ||= resolve('.tmp-figma', 'calls', randomUUID());
+    await mkdir(resolve(values.output), { recursive: true });
+    if (mutating && ['render_screen','patch_nodes'].includes(name)) args.operationId ||= randomUUID();
+    await writeFile(resolve(values.output, 'request.json'), JSON.stringify({tool:name,args}, null, 2),
+      mutating ? {flag:'wx',mode:0o600} : {mode:0o600});
+    evidenceOwned = true;
+    console.error(JSON.stringify({evidence:resolve(values.output),operationId:args.operationId,
+      nextStep:'Read saved response.json; after transport timeout read get_operation_status and affected nodes. Do not replay this runner.'}));
     // Never retry calls: a timeout does not prove that a mutation was not applied.
     const response = await client.callTool({ name, arguments: args }, undefined, { timeout: 150000 });
     outcome.responseReceived = true;
@@ -74,12 +89,13 @@ try {
       for (const item of response.content || []) if (item.type === 'image' && item.mimeType === 'image/png') {
         const path = resolve(output, `preview-${index++}.png`);
         await writeFile(path, Buffer.from(item.data, 'base64'));
-        console.log(JSON.stringify({ image: path }));
+        if (explicitOutput) console.log(JSON.stringify({ image: path }));
       }
-      console.log(JSON.stringify({ result: resolve(output, 'result.json'), isError,
+      if (explicitOutput) console.log(JSON.stringify({ result: resolve(output, 'result.json'), isError,
         operationStatus: payload?.operationStatus, rootId: payload?.result?.rootId,
         verification: payload?.result?.verification, error: resultError, ready: payload?.ready,
         ...(isError ? { nextStep: 'Read response.json/result.json and diagnose; never replay a mutation to reveal its error.' } : {}) }));
+      else console.log(JSON.stringify(payload, null, 2));
     } else console.log(JSON.stringify(payload, null, 2));
     if (isError) process.exitCode = 1;
   }
@@ -99,6 +115,8 @@ try {
     await mkdir(output, { recursive: true });
     // A clipped first line may start halfway through a credential; discard it.
     const bounded = stderr.length >= 16384 ? (stderr.includes('\n') ? stderr.slice(stderr.indexOf('\n') + 1) : '') : stderr;
-    await writeFile(resolve(output, 'transport.json'), JSON.stringify({ ...outcome, stderr: sanitize(bounded).slice(-8192) }, null, 2));
+    try {
+      await writeFile(resolve(output, 'transport.json'), JSON.stringify({ ...outcome, stderr: sanitize(bounded).slice(-8192) }, null, 2), evidenceOwned ? {} : {flag:'wx'});
+    } catch (error) { if (error.code !== 'EEXIST') throw error; }
   }
 }

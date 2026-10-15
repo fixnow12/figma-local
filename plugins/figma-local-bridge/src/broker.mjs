@@ -188,11 +188,11 @@ export async function startBroker({ directory = installationDirectory(), port = 
                   const pendingImport = [...journal.records.values()].find(r=>r.fileKey===fileKey&&!r.settled);
                   if(pendingImport && operation?.mutating !== false) throw Object.assign(Error('Предыдущий импорт ещё не завершён; прочитайте журнал операции.'), {code:'OPERATION_IN_PROGRESS',operationStatus:'not_applied',commandSent:false,operationId:pendingImport.operationId,stage:pendingImport.stage});
                   journal.assertNativeImportReplayAllowed({fileKey,name:operation?.name,args:operation?.operationInput,mutating:operation?.mutating,componentImportKeys:operation?.componentImportKeys});
-                  if(['import_variables','use_component','swap_nested_components'].includes(operation?.name)) {
+                  if(['import_variables','use_component','swap_nested_components'].includes(operation?.name) || (operation?.mutating && ['render_screen','patch_nodes'].includes(operation?.name))) {
                     if(!socket) throw Error('Файл отключён');
                     const input = operation.name==='import_variables'
                       ? operation.importInput
-                      : {fileKey,name:operation.name,...(operation.name==='swap_nested_components'?{operationId:operation.operationInput.operationId}:{}),args:{...operation.operationInput,fileKey}};
+                      : {fileKey,name:operation.name,...(operation.operationInput?.operationId?{operationId:operation.operationInput.operationId}:{}),args:{...operation.operationInput,fileKey}};
                     if(input?.fileKey !== fileKey || (operation.name==='import_variables'&&!Array.isArray(input.variables))) throw Error('Неверные аргументы операции');
                     const resumeToken = randomBytes(32).toString('hex');
                     record = journal.begin(input,connectionId(socket),resumeToken);
@@ -200,10 +200,15 @@ export async function startBroker({ directory = installationDirectory(), port = 
                     journal.mark(record.operationId,{commandSent:true});
                   }
                   try { const value = await bridge.execute(args.code, {timeout,fileKey,pageId:args.pageId,expectedSocket:socket,operation});
-                    if(record) value.operationId=record.operationId;
+                    if(record) {
+                      value.operationId=record.operationId;
+                      const current=journal.get(fileKey,record.operationId);
+                      journal.mark(record.operationId,{result:structuredClone(value.result),
+                        ...(!current.settled && ['render_screen','patch_nodes'].includes(record.name) ? {settled:true,state:'verified',operationStatus:operation.mutating?'applied':'read',stage:'verified',receiptPending:true} : {})});
+                    }
                     return value;
                   } catch(error) {
-                    if(record) { const current=journal.get(fileKey,record.operationId); if(!current.settled) journal.mark(record.operationId,error.operationStatus==='not_applied'?{state:'failed',settled:true,operationStatus:'not_applied',code:error.code||'OPERATION_NOT_SENT'}:{state:'unknown',operationStatus:'unknown'});
+                    if(record) { journal.mark(record.operationId,{error:{message:error.message,code:error.code,operationStatus:error.operationStatus,rollbackErrors:error.rollbackErrors}}); const current=journal.get(fileKey,record.operationId); if(!current.settled) journal.mark(record.operationId,error.operationStatus==='not_applied'?{state:'failed',settled:true,operationStatus:'not_applied',code:error.code||'OPERATION_NOT_SENT'}:{state:'unknown',operationStatus:'unknown'});
                       Object.assign(error,{operationId:record.operationId,argsHash:record.argsHash,stage:current.stage,commandSent:true,originalErrorCode:error.code||'OPERATION_UNKNOWN'}); }
                     throw error;
                   }

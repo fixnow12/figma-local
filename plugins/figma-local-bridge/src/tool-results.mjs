@@ -64,7 +64,7 @@ function operationMetadata(input, name, mutating) {
       : [];
   }
   if (name === 'import_variables') operation.importInput = input;
-  else if (['use_component', 'swap_nested_components'].includes(name)) operation.operationInput = input;
+  else if (['use_component', 'swap_nested_components'].includes(name) || (mutating && ['render_screen','patch_nodes'].includes(name))) operation.operationInput = input;
   return operation;
 }
 

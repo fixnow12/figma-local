@@ -296,3 +296,25 @@ test('use_component receives a durable journal and late not_applied unlocks late
  const next=client.execute('next',{fileKey:'a',operation:{name:'patch_nodes',mutating:true,operationInput:{fileKey:'a'}}});
  await until(()=>calls.length===2);calls[1].resolve({});await next;
 });
+
+for(const name of ['render_screen','patch_nodes']) test(`${name}: real broker saves receipt, rejects replay and retains late result`,async t=>{
+ const {calls,clients:[client],broker}=await fixture(t);
+ const socket={terminate(){},close(){},send(){},readyState:1};broker.bridge.wsServer.clients.set('a',{ws:socket,fileInfo:{fileKey:'a'}});broker.bridge.wsServer.socketKeys.set(socket,'a');
+ const operationId='cccccccc-cccc-4ccc-accc-cccccccccccc';
+ const options={fileKey:'a',operation:{name,mutating:true,operationInput:{fileKey:'a',operationId,key:'root'}}};
+ const req=client.execute('create',options), rejected=assert.rejects(req,e=>e.operationId===operationId&&e.operationStatus==='unknown');
+ await until(()=>calls.length===1);
+ const meta=calls[0].options.operation.journal;
+ calls[0].reject(Object.assign(Error('timeout'),{operationStatus:'unknown',code:'TEST_TIMEOUT'}));await rejected;
+ assert.equal((await client.operationStatus({fileKey:'a',operationId})).operation.settled,false);
+ await assert.rejects(client.execute('retry',options),{code:'OPERATION_IN_PROGRESS'});
+ broker.bridge.wsServer.onOperationEvent(socket,{...meta,sequence:1,stage:'settled',success:true,result:{rootId:'1:2',created:['component-a']}});
+ for(let i=0;i<3;i++){
+ const r=(await client.operationStatus({fileKey:'a',operationId})).operation;
+ assert.equal(r.operationStatus,'applied');assert.equal(r.result.rootId,'1:2');
+ }
+ await assert.rejects(client.execute('retry',options),{code:'OPERATION_ALREADY_EXISTS'});
+ assert.equal(calls.length,1);
+ const next=client.execute('intentional edit',{...options,operation:{...options.operation,operationInput:{...options.operation.operationInput,operationId:'dddddddd-dddd-4ddd-addd-dddddddddddd'}}});
+ await until(()=>calls.length===2);calls[1].resolve({result:{rootId:'1:2'}});await next;
+});

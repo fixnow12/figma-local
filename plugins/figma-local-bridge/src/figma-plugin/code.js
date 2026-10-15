@@ -551,7 +551,7 @@ figma.ui.onmessage = async (msg) => {
       try {
         // Explicit parameter also preserves cancellation checks in generated code.
         codePromise = eval(wrappedCode)(executionControl);
-        codePromise.then(function(){executionControl.report({stage:'settled',success:true});},function(error){executionControl.report({stage:'settled',success:false,code:error.code||'OPERATION_FAILED',operationStatus:error.operationStatus||'unknown'});});
+        codePromise.then(function(result){executionControl.report({stage:'settled',success:true,result:result});},function(error){executionControl.report({stage:'settled',success:false,error:error.message,rollbackErrors:error.rollbackErrors,code:error.code||'OPERATION_FAILED',operationStatus:error.operationStatus||'unknown'});});
       } catch (syntaxError) {
         // Log the actual syntax error message
         var syntaxErrorMsg = syntaxError && syntaxError.message ? syntaxError.message : String(syntaxError);

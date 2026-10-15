@@ -68,3 +68,18 @@ test('typed client rejects ignored positional JSON before configuration or trans
   assert.equal(result.status,1);assert.match(result.stderr,/use --args FILE/);assert.doesNotMatch(result.stderr,/ENOENT|no such file/);
  }
 });
+
+test('CLI refuses runner replay before dispatch and preserves existing receipt files',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'bridge-replay-'));
+ try{
+ const sdk=resolve('node_modules/@modelcontextprotocol/sdk/dist/esm');
+ const server=join(root,'server.mjs');
+ await writeFile(server,`import {McpServer} from ${JSON.stringify('file://'+sdk+'/server/mcp.js')};\nimport {StdioServerTransport} from ${JSON.stringify('file://'+sdk+'/server/stdio.js')};\nconst s=new McpServer({name:'fixture',version:'1'});s.registerTool('fixture',{annotations:{readOnlyHint:false}},async()=>({content:[{type:'text',text:'{}'}]}));await s.connect(new StdioServerTransport());`);
+ await writeFile(join(root,'.mcp.json'),JSON.stringify({mcpServers:{'figma-local':{command:process.execPath,args:[server]}}}));
+ const output=join(root,'out'),cmd=['scripts/call-tool.mjs','fixture','--plugin-root',root,'--output',output];
+ const first=spawnSync(process.execPath,cmd,{encoding:'utf8',timeout:15000});assert.equal(first.status,0,first.stderr);
+ const saved=await Promise.all(['request.json','response.json','transport.json'].map(f=>readFile(join(output,f),'utf8')));
+ const second=spawnSync(process.execPath,cmd,{encoding:'utf8',timeout:15000});assert.equal(second.status,1);assert.match(second.stderr,/EEXIST/);
+ assert.deepEqual(await Promise.all(['request.json','response.json','transport.json'].map(f=>readFile(join(output,f),'utf8'))),saved);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
